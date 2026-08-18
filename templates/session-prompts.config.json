@@ -25,6 +25,6 @@
   "_claudeCommand": "Ejecutable de Claude Code. Default 'claude'.",
   "claudeCommand": "claude",
 
-  "_maxPromptChars": "Corte de tamano del prompt. Default 30000 (la linea de comandos de Windows corta en 32767 y hay que dejar margen para los flags).",
-  "maxPromptChars": 30000
+  "_maxPromptChars": "Tope propio del repo sobre el largo del prompt, por politica. NO hace falta para el limite del sistema: el runner ya mide la linea de comandos completa (ejecutable + flags + prompt escapado) contra el techo de Windows. null = sin tope propio.",
+  "maxPromptChars": null
 }

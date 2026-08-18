@@ -58,8 +58,13 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   lo necesita.
 - **Las carpetas que empiezan con `_` no son series**, aunque tengan prompts numerados adentro. Es lo
   que permite que `_serie-de-ejemplo` muestre el formato completo sin ensuciar el menú.
-- **El corte por tamaño del prompt es un error, no un truncado.** Un prompt truncado en silencio es
-  peor que una corrida que no arranca.
+- **El corte por tamaño es un error, no un truncado**, y **mide la línea de comandos completa**
+  (ejecutable + flags + nombre de sesión + prompt escapado) contra el techo de Windows, no el largo
+  crudo del prompt. Un número fijo se equivoca en las dos direcciones: está medido, y los dos casos
+  aparecieron entre los prompts reales.
+- **Los 439 prompts reales de los ocho repos pasan por el runner y llegan byte a byte** (los tres
+  que no, superan el techo del sistema y hay que partirlos). El arnés que lo verifica no vive en
+  este repo: copia las series a un repo temporal y no toca los de origen.
 
 ## 4. Estructura
 

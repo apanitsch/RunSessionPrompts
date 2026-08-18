@@ -499,14 +499,77 @@ Test-Case "-DryRun imprime el plan y no lanza ninguna sesion" {
     Assert-Equal 0 (Get-Sesiones $f).Count "no puede haber corrido ninguna sesion"
 }
 
-Test-Case "un prompt mas largo que el maximo corta con error, no se trunca en silencio" {
+# El techo de la linea de comandos es del sistema (32767 para todo: ejecutable, flags, nombre de
+# sesion y prompt ya escapado), asi que los tamanios de estos casos se calculan a partir de la
+# ruta del ejecutable de prueba en vez de ponerse a mano.
+$script:TechoLinea = 32767 - 128
+
+function Get-LargoDePromptQueEntra([string]$exe) {
+    # Con holgura para los flags (~85) y el nombre de la sesion.
+    return $script:TechoLinea - $exe.Length - 500
+}
+
+Test-Case "un prompt grande que SI entra en la linea de comandos se corre" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
     $f = New-Fixture
-    $serie = New-Serie $f 'serie-larga' @{ '01-gigante.md' = ('x' * 31000) }
+    $largo = Get-LargoDePromptQueEntra $script:EcoExe
+    $texto = 'x' * $largo
+    $serie = New-Serie $f 'serie-grande' @{ '01-grande.md' = $texto }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "un prompt de $largo caracteres entra y tiene que correr. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "y tiene que llegar entero"
+}
+
+Test-Case "un prompt que NO entra corta con un error que dice cuanto ocupa" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $largo = (Get-LargoDePromptQueEntra $script:EcoExe) + 1000
+    $serie = New-Serie $f 'serie-pasada' @{ '01-pasada.md' = ('x' * $largo) }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
+    Assert-Match 'no entra en la linea de comandos de Windows' $r.Salida "con el motivo"
+    Assert-Match 'el maximo utilizable es' $r.Salida "y con los numeros"
+    Assert-Match 'Partilo en dos sesiones' $r.Salida "y con que hacer"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "el corte cuenta lo que el prompt ocupa ESCAPADO, no su largo crudo" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    # Largo crudo CHICO -- 22000 caracteres, menos que cualquier corte fijo razonable -- pero
+    # con dos comillas cada tres caracteres. Cada '"' viaja como '\\"', asi que escapado ocupa
+    # casi el doble y no entra. Un corte hecho sobre el largo crudo dejaria pasar esto, y la
+    # sesion moriria con el error del sistema en vez de con un mensaje que diga que hacer.
+    $largo = 22000
+    $patron = '"a"'
+    $texto = ($patron * [Math]::Ceiling($largo / $patron.Length)).Substring(0, $largo)
+    $serie = New-Serie $f 'serie-comillona' @{ '01-comillona.md' = $texto }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-True ($r.ExitCode -ne 0) "el mismo largo crudo, pero lleno de comillas, ya no entra"
+    Assert-Match 'no entra en la linea de comandos de Windows' $r.Salida "con el motivo"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "maxPromptChars de la configuracion sigue siendo un tope propio del repo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-tope' @{ '01-mediano.md' = ('x' * 5000) }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "maxPromptChars": 1000 }'
 
     $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
-    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
-    Assert-Match 'no entra en la linea de comandos' $r.Salida "con un mensaje que diga que hacer"
-    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza la sesion truncada"
+    Assert-True ($r.ExitCode -ne 0) "tiene que respetar el tope del repo"
+    Assert-Match 'maxPromptChars' $r.Salida "y decir de donde sale"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
 }
 
 Test-Case "la configuracion del repo fija modelo y effort sin preguntar nada" {

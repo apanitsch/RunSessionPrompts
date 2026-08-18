@@ -6,6 +6,35 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.2.1] — 2026-08-18
+
+Salió de pasar los **439 prompts reales** de los ocho repos de origen por el runner, contra el
+`.exe` de prueba. **436 llegaron byte a byte.** Los otros tres no los corrió el runner: pesan
+35201, 40023 y 45712 caracteres, o sea que están por encima del techo de Windows (32767 para toda
+la línea de comandos) y hay que partirlos. Eso no tiene arreglo posible del lado del script.
+
+### Corregido
+
+- **El corte por tamaño ahora mide la línea de comandos completa** —ruta del ejecutable, flags,
+  nombre de la sesión y prompt ya escapado— contra el techo real de Windows, en vez de comparar el
+  largo crudo del prompt contra un 30000 fijo. Ese número se equivocaba **en las dos direcciones**,
+  y las dos aparecieron midiendo:
+  - rechazaba `ChatNet/canal-olark/01-informe-spike-xmpp.md`, de 31697 caracteres, que entra
+    perfectamente (medido: con texto plano entra un prompt de 32500 y falla uno de 32600);
+  - habría aceptado un prompt bastante más corto pero lleno de comillas, que no entra: cada `"`
+    viaja como `\"`, así que 22000 caracteres de `"a"` ocupan casi el doble.
+
+### Cambiado
+
+- `maxPromptChars` pasó a ser un **tope propio del repo** (opcional, para quien quiera prompts
+  cortos por política) en vez del límite del sistema, que ahora el runner calcula solo. La
+  plantilla de configuración viene con la clave en `null`.
+
+### Nota
+
+- Verificado por mutación: volver a cortar por el largo crudo del prompt pone en rojo el caso del
+  prompt grande que sí entra y el del prompt lleno de comillas.
+
 ## [1.2.0] — 2026-08-18
 
 Salió de probar el transporte del prompt con payloads hostiles: comillas dobles pares e impares,
@@ -136,7 +165,8 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...v1.1.0

@@ -247,7 +247,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.2.0'
+$script:RunnerVersion = '1.2.1'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
@@ -359,11 +359,19 @@ $WorktreeRoot  = Resolve-Setting 'worktreeRoot'  $WorktreeRoot  ''
 $usaWorktree   = Resolve-SwitchSetting 'worktree' $PSBoundParameters.ContainsKey('Worktree') ([bool]$Worktree) $false
 $fullAuto      = Resolve-SwitchSetting 'fullAuto' $PSBoundParameters.ContainsKey('FullAuto') ([bool]$FullAuto) $false
 
-# CreateProcess corta en 32767 caracteres TODA la linea de comandos, no solo el prompt: ahi
-# entran tambien claude, --model, --effort, --permission-mode, --rc y --name (unos 130
-# caracteres). El corte en 30000 deja ese margen y algo mas. Si un prompt se pasa, preferimos
-# un error claro y no un prompt truncado en silencio: partilo en dos sesiones.
-$maxPromptChars = 30000
+# CreateProcess corta en 32767 caracteres TODA la linea de comandos: la ruta del ejecutable,
+# los flags, el nombre de la sesion y el prompt ya escapado. Por eso el corte NO se hace sobre
+# el largo del prompt (ver Test-EntraEnLaLineaDeComandos mas abajo): un numero fijo se equivoca
+# en las dos direcciones, y esta MEDIDO que se equivoca.
+$script:TechoLineaDeComandos = 32767
+
+# Margen: el techo es del sistema operativo y no queremos quedar justo contra el borde por una
+# diferencia de un caracter entre lo que estimamos y lo que PowerShell arma.
+$script:MargenLineaDeComandos = 128
+
+# Tope opcional y ADICIONAL sobre el largo crudo del prompt, para el que quiera mantener sus
+# prompts cortos por politica. Sin esta clave no hay tope propio: manda el del sistema.
+$maxPromptChars = 0
 $cfgMax = Get-ConfigValue 'maxPromptChars'
 if ($null -ne $cfgMax -and [int]$cfgMax -gt 0) { $maxPromptChars = [int]$cfgMax }
 
@@ -658,6 +666,33 @@ function ConvertTo-NativeArg([string]$s) {
     $s = $s -replace '(\\*)"', '$1$1\"'
     $s = $s -replace '(\\+)$', '$1$1'
     return $s
+}
+
+# Como queda un argumento adentro de la linea de comandos: entre comillas si hace falta, y con
+# las comillas internas escapadas. Es lo mismo que hace PowerShell en modo 'Standard'; lo
+# replicamos para poder MEDIR cuanto va a ocupar antes de intentarlo.
+function Get-ArgumentoEnLinea([string]$s) {
+    $cuerpo = ConvertTo-NativeArg $s
+    if ($s -eq '' -or $s -match '[\s"]') { return '"' + $cuerpo + '"' }
+    return $cuerpo
+}
+
+# El largo REAL de la linea de comandos que se va a armar. MEDIDO en esta maquina el 2026-08-18
+# con un .exe nativo: con texto plano entra un prompt de 32500 y falla uno de 32600 (ruta del
+# ejecutable de 150 caracteres); con un texto que trae una comilla cada diez caracteres, el
+# mismo prompt ocupa mucho mas y falla ya en 30000, porque cada '"' viaja como '\"'.
+#
+# O sea que el corte fijo de 30000 caracteres que este script traia se equivocaba en las dos
+# direcciones: rechazaba prompts de 31697 que entran (hay uno real en ChatNet) y aceptaba
+# prompts llenos de comillas que no entran.
+#
+# Cuando no entra, la falla es RUIDOSA ("The filename or extension is too long"), no un truncado
+# en silencio. Igual cortamos antes: el mensaje del sistema no dice cual prompt fue ni que hacer.
+function Test-EntraEnLaLineaDeComandos([string]$exe, [string[]]$argumentos) {
+    $partes = @(Get-ArgumentoEnLinea $exe) + @($argumentos | ForEach-Object { Get-ArgumentoEnLinea $_ })
+    $largo = ($partes -join ' ').Length
+    $techo = $script:TechoLineaDeComandos - $script:MargenLineaDeComandos
+    return @(($largo -le $techo), $largo, $techo)
 }
 
 # --- 2) Un 'claude' que sea un shim .cmd/.bat no sirve ---------------------
@@ -1013,8 +1048,9 @@ foreach ($item in $plan) {
     # 'Standard' y PowerShell escapa solo, asi que meter escapado encima degradaria el prompt.
     $arg = if ($escapar) { ConvertTo-NativeArg $promptText } else { $promptText }
 
-    if ($arg.Length -gt $maxPromptChars) {
-        Write-Host "$($p.Name) tiene $($arg.Length) caracteres (maximo $maxPromptChars): no entra en la linea de comandos. Partilo en dos sesiones." -ForegroundColor Red
+    # Tope propio del repo, si lo puso en la configuracion.
+    if ($maxPromptChars -gt 0 -and $promptText.Length -gt $maxPromptChars) {
+        Write-Host "$($p.Name) tiene $($promptText.Length) caracteres y la configuracion de este repo corta en $maxPromptChars (maxPromptChars). Partilo en dos sesiones." -ForegroundColor Red
         exit 1
     }
 
@@ -1028,8 +1064,20 @@ foreach ($item in $plan) {
     # llega a setearlo.
     $global:LASTEXITCODE = 0
 
-    # $($...) explicito: en modo argumento, un '$var.Prop' suelto es facil de leer mal.
-    & $ClaudeCommand --model $($modeloSesion.Id) --effort $effortSesion @claudeArgs --rc $sessionName --name $sessionName $arg
+    # La lista completa, para poder medirla antes de intentar lanzarla.
+    $argsSesion = @('--model', $modeloSesion.Id, '--effort', $effortSesion) + $claudeArgs +
+                  @('--rc', $sessionName, '--name', $sessionName, $arg)
+
+    $entra, $largoLinea, $techoLinea = Test-EntraEnLaLineaDeComandos $ClaudeCommand $argsSesion
+    if (-not $entra) {
+        Write-Host "$($p.Name) no entra en la linea de comandos de Windows." -ForegroundColor Red
+        Write-Host "  El prompt tiene $($promptText.Length) caracteres y, con la ruta del ejecutable, los flags y las" -ForegroundColor Red
+        Write-Host "  comillas escapadas, la linea queda en $largoLinea (el maximo utilizable es $techoLinea)." -ForegroundColor Red
+        Write-Host "  Partilo en dos sesiones." -ForegroundColor Red
+        exit 1
+    }
+
+    & $ClaudeCommand @argsSesion
 
     $relojSesion.Stop()
 

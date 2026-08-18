@@ -250,6 +250,27 @@ usa; si no hay ninguno, **no arranca** y explica qué hacer. Es la misma regla q
 tamaño: mejor una corrida que no empieza que una serie entera leyendo la primera línea de cada
 prompt.
 
+### 4. El corte por tamaño mide la línea, no el prompt
+
+Windows corta en **32767 caracteres toda la línea de comandos**: la ruta del ejecutable, los flags,
+el nombre de la sesión y el prompt **ya escapado**. Por eso el runner no corta por el largo del
+prompt, sino por lo que la línea va a ocupar de verdad.
+
+Medido: con texto plano entra un prompt de 32500 caracteres y falla uno de 32600; con un texto que
+trae una comilla cada diez caracteres, el mismo prompt ocupa mucho más y ya falla en 30000, porque
+cada `"` viaja como `\"`. Un corte fijo se equivoca **en las dos direcciones** — y el que este
+script traía (30000 sobre el prompt crudo) se equivocaba en las dos: rechazaba un prompt real de
+31697 caracteres que entra perfectamente, y habría aceptado uno de 25000 lleno de comillas que no
+entra.
+
+Cuando no entra, la falla del sistema es ruidosa (`The filename or extension is too long`), no un
+truncado en silencio. El runner corta antes igual, porque ese mensaje no dice qué prompt fue ni qué
+hacer.
+
+La clave `maxPromptChars` del `session-prompts.config.json` sigue existiendo, pero ahora es un
+**tope propio del repo** para quien quiera mantener sus prompts cortos por política. Sin ella manda
+el techo del sistema.
+
 ### Qué de todo esto está testeado
 
 Todo se mide contra un `.exe` nativo escrito para eso, que anota cada argumento tal como se lo
@@ -265,12 +286,14 @@ casos de la suite:
 | **Shim `.cmd` sin `.exe`** | el runner **no arranca**, y dice por qué |
 | **Modo `Legacy` heredado** | el runner fija el modo y el prompt cruza intacto igual |
 | **Windows PowerShell 5.1** | no puede correr el runner: falla por el `#Requires` |
+| **Tamaño** | un prompt grande que entra se corre; uno que no entra corta con los números; y un prompt de 22000 caracteres **lleno de comillas** se rechaza, porque escapado ocupa el doble |
 
 Verificado por mutación — un test que no puede fallar no prueba nada:
 
 | Si se rompe el runner así… | …se ponen en rojo |
 | --- | --- |
 | escapar siempre | el `.exe` nativo, los 21 payloads, el shim y `Legacy` |
+| cortar por el largo crudo del prompt | el prompt grande que sí entra, y el lleno de comillas |
 | no escapar nunca | los casos que dependen del escapado en 7.0–7.2 |
 | no fijar el modo | el caso de `Legacy` |
 | aceptar el shim `.cmd` tal cual | los dos casos de shim |
