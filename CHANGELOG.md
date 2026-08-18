@@ -6,6 +6,26 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.1.0] — 2026-08-18
+
+### Agregado
+
+- **Effort sugerido por sesión**, con la marca `<!-- effort-sugerido: xhigh -->` en el `.md` del
+  prompt. Vale la misma regla que ya tenía el modelo, con el effort de la corrida (`high` por
+  defecto, `-Effort` para cambiarlo) haciendo de **tope**: la sesión que pide menos o lo mismo
+  arranca sola; la que pide más para y pregunta, antes de la primera sesión. Los valores son los
+  cinco de `claude --effort`: `low`, `medium`, `high`, `xhigh`, `max`.
+- `--effort` pasó a ser **por sesión**, como `--model`. El plan impreso y el `-DryRun` muestran los
+  dos.
+
+### Cambiado
+
+- Una marca `modelo-sugerido` o `effort-sugerido` con un valor que no existe **corta con un error**
+  en vez de ignorarse. Antes, `<!-- modelo-sugerido: haiku -->` se ignoraba en silencio y la sesión
+  corría con el modelo base sin que nadie se enterara.
+- El encabezado del plan dice «Tope de la corrida» en vez de «Modelo base», que es lo que de verdad
+  es.
+
 ## [1.0.0] — 2026-08-18
 
 Primera versión con control de cambios. Es la **suma** de las ocho copias que vivían en
@@ -55,5 +75,6 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.0.0

@@ -104,8 +104,8 @@ pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -DryRun
 | `-PromptsPath` | La serie. Autocompleta con Tab. Sin él, menú de series. |
 | `-SeriesRoot` | Dónde viven las series. Default: la carpeta del script, o la del repo donde estés. |
 | `-StartFrom` | Número desde el cual empezar (`3` arranca en `03-…`). Es el **número**, no el nombre. |
-| `-Model` | `opus` (default) o `sonnet`. Es el modelo **base**: cada prompt puede sugerir el suyo. |
-| `-Effort` | `low`, `medium`, `high` (default), `xhigh`, `max`. |
+| `-Model` | `opus` (default) o `sonnet`. Es el **tope**: cada prompt puede pedir menos, y para pedir más el script confirma. |
+| `-Effort` | `low`, `medium`, `high` (default), `xhigh`, `max`. También es un **tope**, con la misma regla. |
 | `-FullAuto` | `--dangerously-skip-permissions` en vez de `--permission-mode acceptEdits`. |
 | `-Todas` | El menú incluye también las series ya terminadas. |
 | `-Worktree` | La serie corre aislada en su propio git worktree. |
@@ -134,24 +134,46 @@ sin que haya que acordarse de anotarla. **El script lo escribe solo**: cuando un
 bien y llegó hasta el último prompt de la serie, la marca `terminada` con la fecha. Es exclusivo del
 runner: nada más lo lee, y si lo borrás el script sigue andando (vuelve a mostrar todas, alfabético).
 
-### Modelo sugerido por sesión
+### Modelo y effort sugeridos por sesión
 
-Un prompt declara con qué modelo se pensó, en una marca del `.md`:
+Un prompt declara con qué modelo y con cuánto esfuerzo se pensó, en dos marcas del `.md`:
 
 ```markdown
 <!-- modelo-sugerido: sonnet -->
+<!-- effort-sugerido: xhigh -->
 ```
 
-Con el rango `sonnet < opus`:
+El modelo y el effort de la corrida (`opus` y `high` por defecto) son el **tope**, y para los dos
+vale la misma regla:
 
-- **sugerido menor que el base** → manda el de la sesión, sin preguntar. Bajar es barato, y si el
-  prompt dice que con Sonnet alcanza, no hay motivo para gastar Opus.
-- **sugerido mayor que el base** → el script **para y pregunta**, antes de arrancar. Correr una
+- **la sesión pide menos que el tope** → se usa lo que pide, sin preguntar. Bajar es barato, y la
+  sesión sabe lo que necesita: si un prompt dice que con Sonnet y `low` alcanza, no hay motivo para
+  gastar Opus en `high`.
+- **la sesión pide más que el tope** → el script **para y pregunta**, antes de arrancar. Correr una
   sesión con menos de lo que pide no es una decisión que se tome sola.
-- **igual, o sin marca** → el base, sin ruido.
+- **igual, o sin marca** → el tope, sin ruido.
+
+Con los defaults, entonces: cualquier sesión puede abaratarse sola, y ninguna puede pedir Opus con
+la corrida en Sonnet, ni `xhigh` o `max` con la corrida en `high`, sin que lo confirmes. Para
+levantar el tope de toda la corrida, `-Model` y `-Effort`.
+
+Los valores son los mismos que aceptan los parámetros: `opus` y `sonnet` para el modelo; `low`,
+`medium`, `high`, `xhigh` y `max` para el effort. **Una marca con un valor que no es ninguno de
+esos corta con un error** — una marca mal escrita que se ignora en silencio es exactamente lo que
+este script no hace.
 
 Regla práctica al escribir prompts: la sesión que **escribe** con el criterio ya resuelto va con
-`sonnet`; la que **juzga** va con `opus`.
+`sonnet` y poco effort; la que **juzga** va con `opus`, y con `xhigh` o `max` si además el problema
+es difícil.
+
+Todo esto se resuelve **antes de la primera sesión**, y el plan que se imprime muestra el modelo y
+el effort de cada una, con el porqué:
+
+```
+  01-arranque.md                     Opus 5   effort high
+  02-tramite.md                      Sonnet 5 effort low     <- modelo sugerido (baja desde Opus 5); effort sugerido (baja desde high)
+  03-dificil.md                      Opus 5   effort max     <- effort sugerido (SUBE, confirmado)
+```
 
 ### Aislamiento por worktree (`-Worktree`)
 

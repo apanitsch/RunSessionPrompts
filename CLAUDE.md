@@ -35,6 +35,9 @@ Dos objetivos, y todo cambio se juzga contra ellos:
 - **Todo lo que hay que decidir se pregunta antes de la primera sesión.** Es la única promesa que el
   script no puede romper: el usuario contesta una vez y se va de la máquina. Ninguna pregunta nueva
   puede quedar adentro del loop.
+- **Nada se degrada en silencio.** Si una marca de un prompt está mal escrita, si el prompt no entra
+  en la línea de comandos, si el escapado de comillas puede corromper el texto: error claro o
+  motivo impreso, nunca seguir con algo distinto de lo que se pidió.
 
 ## 3. Decisiones ya tomadas — no re-litigar
 

@@ -1,4 +1,5 @@
 <!-- modelo-sugerido: sonnet -->
+<!-- effort-sugerido: high -->
 
 <!--
 PLANTILLA de prompt de sesion. Copiala a `<serie>/NN-descripcion.md`.
@@ -6,11 +7,15 @@ PLANTILLA de prompt de sesion. Copiala a `<serie>/NN-descripcion.md`.
 - Borra las secciones que no apliquen, PERO no borres una para no tener que contestarla.
 - El prompt tiene que ser AUTOCONTENIDO: se ejecuta con contexto fresco, sin la conversacion previa.
   Un prompt que solo funciona "si estabas en la conversacion anterior" es un prompt roto.
-- LA MARCA DE ARRIBA (`modelo-sugerido`) la lee `Run-SessionPrompts.ps1`: `sonnet` u `opus`.
-  Si es MENOR que el modelo base de la corrida, manda el de la sesion; si es MAYOR, el script PARA
-  Y PREGUNTA antes de arrancar. Regla practica: una sesion que ESCRIBE con el criterio ya resuelto
-  aca va con `sonnet`; una que JUZGA va con `opus`. Si la borras, la sesion corre con el modelo base.
-- Borra este comentario (no la marca de modelo) antes de commitear.
+- LAS DOS MARCAS DE ARRIBA las lee `Run-SessionPrompts.ps1`:
+    * `modelo-sugerido`: `sonnet` u `opus`.
+    * `effort-sugerido`: `low`, `medium`, `high`, `xhigh` o `max`.
+  El modelo y el effort de la corrida son el TOPE. Si la sesion pide MENOS o lo mismo, arranca sola;
+  si pide MAS, el script PARA Y PREGUNTA antes de la primera sesion. Si borras una marca, esa
+  dimension corre con el tope. Un valor que no exista CORTA con un error, no se ignora.
+  Regla practica: la sesion que ESCRIBE con el criterio ya resuelto aca va con `sonnet` y poco
+  effort; la que JUZGA va con `opus`, y con `xhigh` o `max` si ademas el problema es dificil.
+- Borra este comentario (no las marcas de modelo y effort) antes de commitear.
 -->
 
 # Sesión «NN» — «Título corto de la sesión»

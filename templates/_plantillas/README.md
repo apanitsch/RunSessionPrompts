@@ -26,7 +26,10 @@ empieza con `_`, así que `Run-SessionPrompts.ps1` la ignora y nunca se confunde
   memoria de las sesiones anteriores. Un prompt que sólo se entiende "si estabas en la conversación
   anterior" es un prompt roto: lo que la sesión necesita saber está en el prompt, en el `README.md` de
   la serie, en el `ESTADO.md` o en un archivo del repo que el prompt nombre explícitamente.
-- **El modelo se declara en el prompt.** La marca `<!-- modelo-sugerido: sonnet -->` en la primera
-  línea la lee el runner. Regla práctica: una sesión que **escribe** con el criterio ya resuelto va
-  con `sonnet`; una que **juzga** (decidir cómo se modela algo, resolver algo abierto, escribir una
-  decisión que cuesta revertir) va con `opus`. Sin marca, corre con el modelo base de la corrida.
+- **El modelo y el effort se declaran en el prompt.** Las marcas `<!-- modelo-sugerido: sonnet -->`
+  y `<!-- effort-sugerido: xhigh -->` de las primeras líneas las lee el runner. Lo que elegiste para
+  la corrida es el **tope**: la sesión que pide menos arranca sola, la que pide más se confirma antes
+  de empezar. Regla práctica: una sesión que **escribe** con el criterio ya resuelto va con `sonnet`
+  y poco effort; una que **juzga** (decidir cómo se modela algo, resolver algo abierto, escribir una
+  decisión que cuesta revertir) va con `opus`, y con `xhigh` o `max` si además el problema es
+  difícil. Sin marca, esa dimensión corre con el tope de la corrida.

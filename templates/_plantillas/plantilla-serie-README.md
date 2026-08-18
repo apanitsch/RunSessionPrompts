@@ -65,10 +65,10 @@ Valen para **todas** las sesiones.
 
 ## Sesiones
 
-| # | Sesión | Entrega | Modelo |
-| --- | --- | --- | --- |
-| 01 | [«Título»](01-«descripcion».md) | «Qué deja lista» | «opus / sonnet» |
-| 02 | [«Título»](02-«descripcion».md) | «…» | «…» |
+| # | Sesión | Entrega | Modelo | Effort |
+| --- | --- | --- | --- | --- |
+| 01 | [«Título»](01-«descripcion».md) | «Qué deja lista» | «opus / sonnet» | «high / xhigh / …» |
+| 02 | [«Título»](02-«descripcion».md) | «…» | «…» | «…» |
 
 «Aclará las dependencias: cuáles son paralelizables y cuál necesita a cuál.»
 

@@ -94,12 +94,28 @@
         lo que pide es la clase de decision que no se toma sola.
       - Igual, o sin marca -> el base, sin ruido.
 
-    Se resuelve todo antes de lanzar la primera sesion, y el plan se imprime con el modelo de
-    cada una.
+    Se resuelve todo antes de lanzar la primera sesion, y el plan se imprime con el modelo y el
+    effort de cada una.
 
 .PARAMETER Effort
     Nivel de esfuerzo de razonamiento: low, medium, high (default), xhigh, max. Si no se pasa y
     tampoco esta en la configuracion, el script muestra un MENU (Enter = high).
+
+    Igual que con el modelo, cada prompt puede SUGERIR el suyo con una marca en el .md:
+
+        <!-- effort-sugerido: xhigh -->
+
+    Y vale la misma regla, con el effort de la corrida como TOPE:
+      - Sugerido MENOR o IGUAL que el tope -> se usa el de la sesion, sin preguntar.
+      - Sugerido MAYOR que el tope         -> el script PARA Y PREGUNTA.
+      - Sin marca                          -> el tope, sin ruido.
+
+    O sea que el default de siempre (high) deja pasar solo lo que pida high o menos, y cualquier
+    sesion que pida xhigh o max se confirma a mano. Para levantar el tope de toda la corrida,
+    -Effort xhigh (o max).
+
+    Si la marca trae un valor que no es ninguno de los cinco, el script CORTA con un error: una
+    marca mal escrita que se ignora en silencio es justo lo que este script no hace.
 
 .PARAMETER Worktree
     Corre la serie AISLADA en su propio git worktree, en vez de en el checkout donde estas.
@@ -231,7 +247,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.0.0'
+$script:RunnerVersion = '1.1.0'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
@@ -579,12 +595,12 @@ if (-not (Test-Path -LiteralPath $PromptsPath)) {
     exit 1
 }
 
-# Effort y permisos son iguales para todas las sesiones de la corrida. El MODELO no: cada
-# prompt puede sugerir el suyo (ver el bloque "Modelo sugerido por sesion" mas abajo), asi que
-# '--model' se agrega por sesion.
+# Los permisos son iguales para todas las sesiones de la corrida. El MODELO y el EFFORT no:
+# cada prompt puede sugerir los suyos (ver el bloque "Modelo y effort sugeridos por sesion" mas
+# abajo), asi que '--model' y '--effort' se agregan por sesion.
 # (Dentro de una sesion se pueden cambiar con /model y /effort, o verificar con /status.)
 # Remote Control (--rc) se agrega por sesion, con nombre, mas abajo.
-$claudeArgs = @('--effort', $Effort)
+$claudeArgs = @()
 if ($fullAuto) {
     $claudeArgs += '--dangerously-skip-permissions'
 } else {
@@ -742,70 +758,115 @@ if ($usaWorktree) {
     $workDir = $worktreePath
 }
 
-# --- Modelo sugerido por sesion -------------------------------------------
-# Un prompt puede declarar con que modelo se penso escribirlo, con una marca en el .md:
+# --- Modelo y effort sugeridos por sesion ---------------------------------
+# Un prompt puede declarar con que modelo y con cuanto esfuerzo se penso escribirlo, con dos
+# marcas en el .md:
 #
 #     <!-- modelo-sugerido: sonnet -->
+#     <!-- effort-sugerido: xhigh -->
 #
-# La regla (decision del owner, 2026-07-27), con el rango sonnet < opus:
-#   - sugerido MENOR que el base -> manda el de la sesion, sin preguntar (bajar es barato).
-#   - sugerido MAYOR que el base -> PARA Y PREGUNTA (correr con menos de lo que pide la sesion
+# La regla es la MISMA para los dos (la del modelo es decision del owner, 2026-07-27; la del
+# effort, 2026-08-18), con el valor de la corrida haciendo de TOPE:
+#   - sugerido MENOR que el tope -> manda el de la sesion, sin preguntar (bajar es barato, y la
+#     sesion sabe lo que necesita).
+#   - sugerido MAYOR que el tope -> PARA Y PREGUNTA (correr una sesion con menos de lo que pide
 #     no se decide solo).
-#   - igual, o sin marca         -> el base, sin ruido.
+#   - igual, o sin marca         -> el tope, sin ruido.
+#
+# Con los defaults (Opus 5 y high) eso significa: cualquier sesion puede pedir menos y arranca
+# sola; ninguna sesion puede pedir mas -- Opus si la corrida esta en Sonnet, xhigh o max si esta
+# en high -- sin que vos lo confirmes. Para levantar el tope de toda la corrida: -Model / -Effort.
 #
 # Todo esto se resuelve ACA, antes de crear el worktree y de lanzar la primera sesion: si el
 # script preguntara en medio del loop, romperia lo unico que promete (que te podes ir de la
 # maquina).
 $rangoModelo = @{ 'sonnet' = 1; 'opus' = 2 }
+$rangoEffort = @{ 'low' = 1; 'medium' = 2; 'high' = 3; 'xhigh' = 4; 'max' = 5 }
 
-function Get-ModeloSugerido([string]$path) {
-    # -Encoding UTF8 por el mismo motivo que al leer el prompt: los .md no tienen BOM.
-    $texto = Get-Content -LiteralPath $path -Raw -Encoding UTF8
-    $m = [regex]::Match($texto, '(?im)^[ \t]*<!--[ \t]*(?:modelo-sugerido|suggested-model):[ \t]*(opus|sonnet)[ \t]*-->[ \t]*$')
-    if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
-    return $null
+# Los valores validos, listados de menor a mayor: es como se leen en un mensaje de error.
+# ($efforts esta en orden de MENU, con el default primero, que no sirve para eso.)
+$modelosPorRango = @($rangoModelo.GetEnumerator() | Sort-Object Value | ForEach-Object { $_.Key })
+$effortsPorRango = @($rangoEffort.GetEnumerator() | Sort-Object Value | ForEach-Object { $_.Key })
+
+$etiquetaModelo = @{}
+foreach ($m in $modelos) { $etiquetaModelo[$m.Alias] = $m.Etiqueta }
+$etiquetaEffort = @{}
+foreach ($e in $efforts) { $etiquetaEffort[$e] = $e }
+
+# Lee una marca del prompt. El patron es ANCHO a proposito -- captura cualquier valor y despues
+# valida -- para que '<!-- effort-sugerido: alto -->' corte con un error y no se ignore en
+# silencio, que es como un prompt terminaria corriendo con algo distinto de lo que pidio.
+function Get-MarcaSugerida([string]$texto, [string]$marca, [string[]]$validos, [string]$archivo) {
+    $m = [regex]::Match($texto, "(?im)^[ \t]*<!--[ \t]*(?:$marca):[ \t]*(\S+)[ \t]*-->[ \t]*$")
+    if (-not $m.Success) { return $null }
+
+    $valor = $m.Groups[1].Value.ToLowerInvariant()
+    if ($validos -notcontains $valor) {
+        Write-Host "$archivo declara '$valor', que no es un valor valido para esa marca." -ForegroundColor Red
+        Write-Host "Validos: $($validos -join ', ')." -ForegroundColor Red
+        exit 1
+    }
+    return $valor
+}
+
+# La regla de arriba, una sola vez, para el modelo y para el effort.
+# Devuelve el alias elegido y la nota que va al plan; aborta si asi lo pedis.
+function Resolve-Sugerido([string]$nombrePrompt, [string]$que, [string]$sugerido, [string]$tope,
+                          [hashtable]$rango, [hashtable]$etiquetas) {
+    if (-not $sugerido) { return [pscustomobject]@{ Alias = $tope; Nota = '' } }
+
+    if ($rango[$sugerido] -lt $rango[$tope]) {
+        return [pscustomobject]@{
+            Alias = $sugerido
+            Nota  = "$que sugerido (baja desde $($etiquetas[$tope]))"
+        }
+    }
+
+    if ($rango[$sugerido] -eq $rango[$tope]) {
+        return [pscustomobject]@{ Alias = $tope; Nota = "coincide con el $que sugerido" }
+    }
+
+    Write-Host ""
+    Write-Host ("$nombrePrompt sugiere $que {0} y la corrida esta en {1}." -f $etiquetas[$sugerido], $etiquetas[$tope]) -ForegroundColor Yellow
+    Write-Host "  [1] Usar $($etiquetas[$sugerido]) en ESTA sesion (lo que pide el prompt)  (default)"
+    Write-Host "  [2] Correrla igual con $($etiquetas[$tope])"
+    Write-Host "  [3] Abortar"
+
+    $ans = Read-Host "Elegi el numero (Enter = 1)"
+    if ([string]::IsNullOrWhiteSpace($ans) -or $ans -eq '1') {
+        return [pscustomobject]@{ Alias = $sugerido; Nota = "$que sugerido (SUBE, confirmado)" }
+    }
+    if ($ans -eq '2') {
+        return [pscustomobject]@{ Alias = $tope; Nota = "IGNORA el $que sugerido ($($etiquetas[$sugerido])), confirmado" }
+    }
+    if ($ans -eq '3') {
+        Write-Host "Abortado por el usuario." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "Valor invalido: '$ans'. Tiene que ser 1, 2 o 3." -ForegroundColor Red
+    exit 1
 }
 
 $plan = @()
 foreach ($p in $prompts) {
-    $sugerido = Get-ModeloSugerido $p.FullName
-    $modeloSesion = $modelo
-    $nota = ''
+    # -Encoding UTF8 por el mismo motivo que al leer el prompt: los .md no tienen BOM.
+    $texto = Get-Content -LiteralPath $p.FullName -Raw -Encoding UTF8
 
-    if ($sugerido) {
-        $modeloSugerido = $modelos | Where-Object { $_.Alias -eq $sugerido } | Select-Object -First 1
+    $modeloSugerido = Get-MarcaSugerida $texto 'modelo-sugerido|suggested-model' $modelosPorRango $p.Name
+    $effortSugerido = Get-MarcaSugerida $texto 'effort-sugerido|suggested-effort' $effortsPorRango $p.Name
 
-        if ($rangoModelo[$sugerido] -lt $rangoModelo[$Model]) {
-            $modeloSesion = $modeloSugerido
-            $nota = "sugerido por la sesion (baja desde $($modelo.Etiqueta))"
-        }
-        elseif ($rangoModelo[$sugerido] -gt $rangoModelo[$Model]) {
-            Write-Host ""
-            Write-Host ("$($p.Name) sugiere {0} y la corrida esta en {1}." -f $modeloSugerido.Etiqueta, $modelo.Etiqueta) -ForegroundColor Yellow
-            Write-Host "  [1] Usar $($modeloSugerido.Etiqueta) en ESTA sesion (lo que pide el prompt)  (default)"
-            Write-Host "  [2] Correrla igual con $($modelo.Etiqueta)"
-            Write-Host "  [3] Abortar"
+    $decModelo = Resolve-Sugerido $p.Name 'modelo' $modeloSugerido $Model  $rangoModelo $etiquetaModelo
+    $decEffort = Resolve-Sugerido $p.Name 'effort' $effortSugerido $Effort $rangoEffort $etiquetaEffort
 
-            $ans = Read-Host "Elegi el numero (Enter = 1)"
-            if ([string]::IsNullOrWhiteSpace($ans) -or $ans -eq '1') {
-                $modeloSesion = $modeloSugerido
-                $nota = 'sugerido por la sesion (SUBE, confirmado)'
-            } elseif ($ans -eq '2') {
-                $nota = "IGNORA el sugerido ($($modeloSugerido.Etiqueta)), confirmado"
-            } elseif ($ans -eq '3') {
-                Write-Host "Abortado por el usuario." -ForegroundColor Red
-                exit 1
-            } else {
-                Write-Host "Valor invalido: '$ans'. Tiene que ser 1, 2 o 3." -ForegroundColor Red
-                exit 1
-            }
-        }
-        else {
-            $nota = 'coincide con el sugerido'
-        }
+    $notas = @($decModelo.Nota, $decEffort.Nota) | Where-Object { $_ }
+
+    $plan += [pscustomobject]@{
+        Prompt = $p
+        Modelo = $modelos | Where-Object { $_.Alias -eq $decModelo.Alias } | Select-Object -First 1
+        Effort = $decEffort.Alias
+        Nota   = ($notas -join '; ')
     }
-
-    $plan += [pscustomobject]@{ Prompt = $p; Modelo = $modeloSesion; Nota = $nota }
 }
 
 # --- El plan, antes de arrancar -------------------------------------------
@@ -818,7 +879,7 @@ if ($usaWorktree) {
 } else {
     Write-Host "Proyecto (directorio de trabajo): $workDir" -ForegroundColor DarkGray
 }
-Write-Host "Modelo base: $($modelo.Etiqueta) ($($modelo.Id))  |  Effort: $Effort" -ForegroundColor DarkGray
+Write-Host "Tope de la corrida: $($modelo.Etiqueta) ($($modelo.Id))  |  effort $Effort" -ForegroundColor DarkGray
 if ($script:ConfigPath) {
     Write-Host "Configuracion: $script:ConfigPath" -ForegroundColor DarkGray
 }
@@ -831,8 +892,9 @@ Write-Host "Argumentos nativos: $queHace -- $motivoEscapado" -ForegroundColor Da
 # El plan completo: que modelo le toca a cada sesion y por que.
 foreach ($item in $plan) {
     $detalle = if ($item.Nota) { "  <- $($item.Nota)" } else { "" }
-    $color = if ($item.Modelo.Alias -ne $modelo.Alias) { 'Yellow' } else { 'DarkGray' }
-    Write-Host ("  {0,-34} {1}{2}" -f $item.Prompt.Name, $item.Modelo.Etiqueta, $detalle) -ForegroundColor $color
+    $difiere = ($item.Modelo.Alias -ne $modelo.Alias) -or ($item.Effort -ne $Effort)
+    $color = if ($difiere) { 'Yellow' } else { 'DarkGray' }
+    Write-Host ("  {0,-34} {1,-8} effort {2,-6}{3}" -f $item.Prompt.Name, $item.Modelo.Etiqueta, $item.Effort, $detalle) -ForegroundColor $color
 }
 
 if ($DryRun) {
@@ -840,7 +902,7 @@ if ($DryRun) {
     Write-Host "-DryRun: no se lanza ninguna sesion. Lo que se ejecutaria:" -ForegroundColor Yellow
     foreach ($item in $plan) {
         $sessionName = "$serie/$($item.Prompt.BaseName)"
-        $linea = "$ClaudeCommand --model $($item.Modelo.Id) $($claudeArgs -join ' ') --rc $sessionName --name $sessionName <prompt de $($item.Prompt.Name)>"
+        $linea = "$ClaudeCommand --model $($item.Modelo.Id) --effort $($item.Effort) $($claudeArgs -join ' ') --rc $sessionName --name $sessionName <prompt de $($item.Prompt.Name)>"
         Write-Host "  $linea" -ForegroundColor DarkGray
     }
     exit 0
@@ -891,8 +953,9 @@ try {
 foreach ($item in $plan) {
     $p = $item.Prompt
     $modeloSesion = $item.Modelo
+    $effortSesion = $item.Effort
 
-    Write-Host "== Sesion: $($p.Name)  [$($modeloSesion.Etiqueta)]  (/exit para pasar a la proxima) ==" -ForegroundColor Cyan
+    Write-Host "== Sesion: $($p.Name)  [$($modeloSesion.Etiqueta), effort $effortSesion]  (/exit para pasar a la proxima) ==" -ForegroundColor Cyan
 
     # El contenido del prompt va como argumento posicional (mensaje inicial), NO por stdin:
     # si se pipea, claude pierde la TTY y no seria interactivo/RC.
@@ -922,7 +985,7 @@ foreach ($item in $plan) {
     $global:LASTEXITCODE = 0
 
     # $($...) explicito: en modo argumento, un '$var.Prop' suelto es facil de leer mal.
-    & $ClaudeCommand --model $($modeloSesion.Id) @claudeArgs --rc $sessionName --name $sessionName $arg
+    & $ClaudeCommand --model $($modeloSesion.Id) --effort $effortSesion @claudeArgs --rc $sessionName --name $sessionName $arg
 
     $relojSesion.Stop()
 

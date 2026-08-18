@@ -311,7 +311,7 @@ Test-Case "modelo-sugerido mayor que el base pregunta, y la respuesta por defect
     # Enter en la pregunta del modelo (= usar el sugerido).
     $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'sonnet', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) "`n"
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
-    Assert-Match 'sugiere Opus 5 y la corrida esta en Sonnet 5' $r.Salida "tiene que avisar antes de arrancar"
+    Assert-Match 'sugiere modelo Opus 5 y la corrida esta en Sonnet 5' $r.Salida "tiene que avisar antes de arrancar"
 
     $s = Get-Sesiones $f
     Assert-Equal 'claude-opus-5' (Get-ArgValue $s[0] '--model') "con Enter usa el sugerido"
@@ -552,6 +552,75 @@ Test-Case "el instalador se niega a pisar un runner modificado a mano" {
     Assert-Equal 0 $r2.ExitCode "con -Force. Salida:`n$($r2.Salida)"
     Assert-True (Test-Path -LiteralPath "$runner.bak") "tiene que dejar el .bak"
     Assert-True ($antes -ne (Get-FileHash -LiteralPath $runner).Hash) "con -Force tiene que actualizarlo"
+}
+
+Test-Case "effort-sugerido menor o igual que el tope se usa sin preguntar" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-effort' @{
+        '01-sin-marca.md' = 'sin marca'
+        '02-baja.md'      = "<!-- effort-sugerido: low -->`n`ntramite corto"
+        '03-igual.md'     = "<!-- effort-sugerido: high -->`n`nlo mismo que el tope"
+    }
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'high' (Get-ArgValue $s[0] '--effort') "la sesion sin marca usa el tope"
+    Assert-Equal 'low'  (Get-ArgValue $s[1] '--effort') "la sesion que pide menos baja sola"
+    Assert-Equal 'high' (Get-ArgValue $s[2] '--effort') "la sesion que pide lo mismo que el tope"
+    Assert-Match 'baja desde high' $r.Salida "el plan tiene que decir por que bajo"
+}
+
+Test-Case "effort-sugerido mayor que el tope pregunta, y con Enter usa el de la sesion" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-effort-sube' @{ '01-dificil.md' = "<!-- effort-sugerido: max -->`n`nesto cuesta" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) "`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'sugiere effort max y la corrida esta en high' $r.Salida "tiene que avisar antes de arrancar"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'max' (Get-ArgValue $s[0] '--effort') "con Enter usa el sugerido"
+}
+
+Test-Case "en la pregunta de effort, la opcion 2 corre igual con el tope y la 3 aborta" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-effort-no' @{ '01-dificil.md' = "<!-- effort-sugerido: xhigh -->`n`nesto cuesta" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'medium', '-ClaudeCommand', $f.FakeClaude) "2`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    $s = Get-Sesiones $f
+    Assert-Equal 'medium' (Get-ArgValue $s[0] '--effort') "con 2 corre con el tope de la corrida"
+    Assert-Match 'IGNORA el effort sugerido' $r.Salida "y lo deja escrito en el plan"
+
+    Remove-Item -LiteralPath $f.Log -ErrorAction SilentlyContinue
+    $r2 = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'medium', '-ClaudeCommand', $f.FakeClaude) "3`n"
+    Assert-True ($r2.ExitCode -ne 0) "con 3 tiene que abortar"
+    Assert-Equal 0 (Get-Sesiones $f).Count "y no lanzar ninguna sesion"
+}
+
+Test-Case "un prompt puede pedir modelo y effort a la vez" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-ambas' @{
+        '01-barata.md' = "<!-- modelo-sugerido: sonnet -->`n<!-- effort-sugerido: low -->`n`ntramite"
+    }
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'claude-sonnet-5' (Get-ArgValue $s[0] '--model') "modelo de la sesion"
+    Assert-Equal 'low' (Get-ArgValue $s[0] '--effort') "effort de la sesion"
+}
+
+Test-Case "una marca con un valor invalido corta con error, no se ignora en silencio" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-marca-mala' @{ '01-mal.md' = "<!-- effort-sugerido: extra -->`n`nx" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
+    Assert-Match "declara 'extra', que no es un valor valido" $r.Salida "con el motivo"
+    Assert-Match 'low, medium, high, xhigh, max' $r.Salida "y con los valores validos"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
 }
 
 # --- Cierre ---------------------------------------------------------------
