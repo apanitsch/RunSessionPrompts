@@ -1,0 +1,29 @@
+# series-estado.txt -- que series le muestra el menu de Run-SessionPrompts.ps1.
+#
+# POR QUE EXISTE: para que el orden de ejecucion propuesta quede escrito, y no haya que
+# reconstruirlo de memoria cada vez. Este archivo es SOLO del script: no lo lee nada mas del
+# sistema, y borrarlo no rompe nada (sin el, el menu vuelve a mostrar todas las series en orden
+# alfabetico).
+#
+# FORMATO: una serie por linea.
+#
+#     <estado> <orden> <serie>
+#
+#   estado  : 'pendiente' (aparece en el menu) o 'terminada' (no aparece).
+#   orden   : el numero de ejecucion propuesta, o '-' si no aplica.
+#   serie   : el nombre de la carpeta.
+#
+# El menu muestra SOLO las pendientes, ORDENADAS por ese numero -- o sea que sale siempre en el
+# orden en que conviene correrlas. Con -Todas las lista todas.
+#
+# Una serie que NO figure aca se considera PENDIENTE y va al final: una carpeta nueva aparece en
+# el menu sin que haya que acordarse de anotarla.
+#
+# EL SCRIPT LO ESCRIBE SOLO: cuando una corrida termina bien y llego hasta el ultimo prompt de la
+# serie, la marca 'terminada' y deja la fecha al lado. Tambien se puede editar a mano.
+#
+# Ejemplos (borralos cuando pongas los tuyos):
+#
+# pendiente 1 primera-serie
+# pendiente 2 la-que-va-despues
+# terminada - una-que-ya-cerro   # cerrada 2026-01-31

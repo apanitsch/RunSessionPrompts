@@ -1,0 +1,5 @@
+# Copias de seguridad que deja el instalador con -Force
+*.bak
+
+# Temporales de la suite de tests (por si alguien corre con -KeepTemp adentro del repo)
+tests/tmp/

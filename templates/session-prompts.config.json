@@ -1,0 +1,30 @@
+{
+  "_ayuda": "Configuracion opcional de Run-SessionPrompts.ps1. Lo que cambia de repo a repo se escribe una vez aca y no se vuelve a tipear. Precedencia: parametro explicito > este archivo > default del script. Borra las claves que no quieras fijar: sin ellas, el script pregunta (modelo, effort) o usa su default. Las claves desconocidas -- como esta -- se ignoran.",
+
+  "_model": "'opus' o 'sonnet'. Si esta, el script no muestra el menu de modelo. null = preguntar.",
+  "model": null,
+
+  "_effort": "low | medium | high | xhigh | max. Si esta, el script no muestra el menu de effort. null = preguntar.",
+  "effort": null,
+
+  "_fullAuto": "true = --dangerously-skip-permissions en todas las sesiones. Default false (--permission-mode acceptEdits).",
+  "fullAuto": false,
+
+  "_worktree": "true = cada serie corre aislada en su propio git worktree. Default false (corre en el checkout donde estas).",
+  "worktree": false,
+
+  "_baseBranch": "Rama de la que parte el worktree de la serie. Default: la rama actual del repo.",
+  "baseBranch": null,
+
+  "_branchPrefix": "La rama del worktree es '<branchPrefix>/<serie>'. Default 'sesiones'.",
+  "branchPrefix": "sesiones",
+
+  "_worktreeRoot": "Donde se crean los worktrees. Default '<repo>\\..\\worktrees'.",
+  "worktreeRoot": null,
+
+  "_claudeCommand": "Ejecutable de Claude Code. Default 'claude'.",
+  "claudeCommand": "claude",
+
+  "_maxPromptChars": "Corte de tamano del prompt. Default 30000 (la linea de comandos de Windows corta en 32767 y hay que dejar margen para los flags).",
+  "maxPromptChars": 30000
+}
