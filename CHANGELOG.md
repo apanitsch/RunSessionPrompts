@@ -6,7 +6,8 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
-## [1.6.0] — 2026-08-18
+> Lo de abajo ya está en `main` pero **todavía no se publicó**. La versión que dice el runner es
+> `1.6.0`: es la que va a llevar el release cuando salga.
 
 ### Cambiado
 
@@ -285,7 +286,6 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.6.0...HEAD
-[1.6.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.6.0
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.5.0...HEAD
 [1.5.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.5.0
 [1.4.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.4.1
