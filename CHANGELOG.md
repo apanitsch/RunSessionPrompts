@@ -6,6 +6,28 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.1.1] — 2026-08-18
+
+Sin cambios de comportamiento: lo que cambia es cuánto de esto está *verificado*.
+
+### Agregado
+
+- **Cuatro casos que cubren el problema de las comillas de punta a punta**, corriendo el runner
+  contra un `.exe` nativo compilado para la prueba, que anota cada argumento tal como se lo entregó
+  el sistema operativo: el prompt cruza intacto hacia un `.exe`, hacia un shim `.cmd`, y en modo
+  `Legacy`; y Windows PowerShell 5.1 no puede correr el runner. Hasta acá la suite sólo probaba
+  esto contra un doble en PowerShell, que se invoca **dentro del mismo proceso** y por lo tanto
+  nunca cruza una línea de comandos de Windows: probaba la decisión, no el transporte.
+- Los casos que no se pueden correr en una máquina ahora se **omiten con el motivo impreso**, en
+  vez de fallar o saltearse en silencio.
+
+### Corregido
+
+- La tabla de mediciones del encabezado del runner decía «comillas PERDIDAS» donde lo que pasa es
+  que el argumento se **parte en varios**: los pedazos de atrás llegan como argumentos sueltos. Y
+  la fila del shim `.cmd`, que venía inferida de la documentación en una de las copias de origen y
+  medida en otra, ahora está medida acá y cubierta por un test.
+
 ## [1.1.0] — 2026-08-18
 
 ### Agregado
@@ -75,6 +97,7 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.0.0

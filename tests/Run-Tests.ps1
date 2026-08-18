@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 $script:Runner     = Join-Path (Split-Path -Parent $PSScriptRoot) 'Run-SessionPrompts.ps1'
 $script:Instalador = Join-Path (Split-Path -Parent $PSScriptRoot) 'Install-SessionPrompts.ps1'
 $script:Pasados   = 0
+$script:Omitidos  = 0
 $script:Fallados  = 0
 $script:Temporales = @()
 
@@ -51,11 +52,22 @@ function Assert-NotMatch([string]$patron, [string]$texto, [string]$mensaje) {
     }
 }
 
+# Un caso que no se puede correr en esta maquina se OMITE, con el motivo a la vista: un caso
+# que se saltea en silencio es peor que no tenerlo.
+class CasoOmitido : System.Exception {
+    CasoOmitido([string]$m) : base($m) { }
+}
+function Skip-Case([string]$motivo) { throw [CasoOmitido]::new($motivo) }
+
 function Test-Case([string]$nombre, [scriptblock]$cuerpo) {
     try {
         & $cuerpo
         $script:Pasados++
         Write-Host "  OK   $nombre" -ForegroundColor Green
+    } catch [CasoOmitido] {
+        $script:Omitidos++
+        Write-Host "  OMITIDO $nombre" -ForegroundColor Yellow
+        Write-Host "          $($_.Exception.Message)" -ForegroundColor DarkYellow
     } catch {
         $script:Fallados++
         Write-Host "  FALLA $nombre" -ForegroundColor Red
@@ -115,11 +127,23 @@ function New-Serie($fixture, [string]$nombre, [hashtable]$prompts) {
 }
 
 # Corre el runner en un pwsh hijo (asi el exit code y los Read-Host quedan aislados).
-function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit) {
+function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy) {
     $env:FAKE_CLAUDE_LOG = $fixture.Log
     if ($fakeExit) { $env:FAKE_CLAUDE_EXIT = "$fakeExit" } else { Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue }
 
-    $todos = @('-NoProfile', '-File', $fixture.Runner) + $argumentos
+    if ($Legacy) {
+        # $PSNativeCommandArgumentPassing solo se puede fijar ANTES de invocar el runner, y con
+        # -File no hay donde hacerlo: por eso este camino usa -Command.
+        # Los NOMBRES de parametro van sin comillas: entrecomillados, PowerShell los tomaria
+        # como valores posicionales y ligaria todo corrido.
+        $citados = $argumentos | ForEach-Object {
+            if ($_ -match '^-[A-Za-z]') { $_ } else { "'" + ($_ -replace "'", "''") + "'" }
+        }
+        $linea = "`$PSNativeCommandArgumentPassing = 'Legacy'; & '" + ($fixture.Runner -replace "'", "''") + "' " + ($citados -join ' ')
+        $todos = @('-NoProfile', '-Command', $linea)
+    } else {
+        $todos = @('-NoProfile', '-File', $fixture.Runner) + $argumentos
+    }
 
     Push-Location -LiteralPath $fixture.Repo
     try {
@@ -187,6 +211,89 @@ function Invoke-Instalador([string]$repo, [string[]]$argumentos) {
         Salida   = ($salida | ForEach-Object { "$_" }) -join "`n"
         ExitCode = $LASTEXITCODE
     }
+}
+
+# --- El consumidor NATIVO de argumentos -----------------------------------
+# El doble .ps1 de arriba alcanza para casi todo, pero NO para la pregunta que mas importa de
+# este script: si el texto del prompt cruza intacto la linea de comandos de Windows. Un .ps1 se
+# invoca DENTRO del mismo proceso, asi que ni siquiera hay linea de comandos que cruzar.
+#
+# Para eso hace falta un .exe de verdad, que lea sus argumentos como los lee claude.exe (o sea,
+# con CommandLineToArgvW). Se compila uno minusculo, una sola vez por corrida de la suite.
+#
+# Lo compila Windows PowerShell 5.1: PowerShell 7 saco el soporte de -OutputType
+# ConsoleApplication, y 5.1 viene con Windows, asi que no agrega ninguna dependencia nueva. Es el
+# unico uso de 5.1 en todo el proyecto, y es para CONSTRUIR el doble, no para correr el runner
+# (que 5.1 no puede correr, y hay un caso que lo verifica).
+# El .exe imprime, en una linea JSON por invocacion, su directorio de trabajo y CADA argumento
+# tal como se lo entrego el sistema operativo. Si el prompt llega partido en la comilla, se ve.
+$script:FuenteEco = @'
+$ErrorActionPreference = 'Stop'
+$fuente = @"
+using System;
+using System.IO;
+using System.Text;
+
+class Eco {
+    static string J(string s) {
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+    static int Main(string[] args) {
+        string log = Environment.GetEnvironmentVariable("FAKE_CLAUDE_LOG");
+        StringBuilder sb = new StringBuilder();
+        sb.Append("{\"Cwd\":\"").Append(J(Environment.CurrentDirectory)).Append("\",\"Args\":[");
+        for (int i = 0; i < args.Length; i++) {
+            if (i > 0) sb.Append(",");
+            sb.Append("\"").Append(J(args[i])).Append("\"");
+        }
+        sb.Append("]}");
+        File.AppendAllText(log, sb.ToString() + Environment.NewLine, new UTF8Encoding(false));
+        string codigo = Environment.GetEnvironmentVariable("FAKE_CLAUDE_EXIT");
+        return string.IsNullOrEmpty(codigo) ? 0 : int.Parse(codigo);
+    }
+}
+"@
+Add-Type -TypeDefinition $fuente -OutputAssembly $args[0] -OutputType ConsoleApplication
+'@
+
+$script:EcoExe = $null
+$script:EcoMotivo = $null
+
+function Initialize-EcoExe {
+    if ($script:EcoExe -or $script:EcoMotivo) { return }
+
+    $ps51 = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if (-not $ps51) {
+        $script:EcoMotivo = "no encontre powershell.exe (Windows PowerShell 5.1), que es lo que compila el .exe de prueba"
+        return
+    }
+
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-eco-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $script:Temporales += $dir
+
+    $exe = Join-Path $dir 'eco-claude.exe'
+    $compilador = Join-Path $dir 'compilar.ps1'
+    Set-Content -LiteralPath $compilador -Encoding UTF8 -Value $script:FuenteEco
+
+    & $ps51.Source -NoProfile -ExecutionPolicy Bypass -File $compilador $exe 2>&1 | Out-Null
+
+    if (Test-Path -LiteralPath $exe) {
+        $script:EcoExe = $exe
+    } else {
+        $script:EcoMotivo = "no pude compilar el .exe de prueba con Windows PowerShell 5.1"
+    }
+}
+
+# Shim .cmd al estilo del que deja npm: reenvia %* a un ejecutable nativo. Es el otro camino que
+# el runner tiene que reconocer, porque ahi PowerShell NO escapa por su cuenta.
+function New-EcoShim($fixture) {
+    $shim = Join-Path $fixture.Repo 'eco-claude.cmd'
+    Set-Content -LiteralPath $shim -Encoding ASCII -Value @(
+        '@echo off',
+        ('"' + $script:EcoExe + '" %*')
+    )
+    return $shim
 }
 
 # --- Casos ----------------------------------------------------------------
@@ -623,13 +730,84 @@ Test-Case "una marca con un valor invalido corta con error, no se ignora en sile
     Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
 }
 
+Test-Case "el prompt cruza INTACTO la linea de comandos hacia un .exe nativo" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    # El texto que se rompia bajo 5.1: comillas dobles, y una ruta con backslashes.
+    $texto = 'El legacy loguea "Session ended" cuando cierra. La ruta es C:\temp\x.'
+    $serie = New-Serie $f 'serie-nativa' @{ '01-cita.md' = $texto }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'NO escapa' $r.Salida "con un .exe nativo, el runner NO tiene que escapar"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 1 $s.Count "una sesion"
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, con sus comillas"
+
+    # Lo que rompia bajo 5.1 era que el argumento se PARTIA en la primera comilla: el pedazo de
+    # atras llegaba como argumentos sueltos. Por eso no alcanza con mirar el ultimo.
+    $anteriores = @($s[0].Args)[0..(@($s[0].Args).Count - 2)]
+    Assert-True (-not ($anteriores | Where-Object { $_ -match 'Session|legacy|temp' })) "ningun pedazo del prompt puede haber quedado suelto como otro argumento"
+}
+
+Test-Case "con un 'claude' que es un shim .cmd, el prompt tambien cruza intacto" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $shim = New-EcoShim $f
+    $texto = 'El legacy loguea "Session ended" cuando cierra.'
+    $serie = New-Serie $f 'serie-shim' @{ '01-cita.md' = $texto }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $shim)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'escapa a mano' $r.Salida "con un shim .cmd, el runner SI tiene que escapar"
+    Assert-Match 'es un shim \.cmd' $r.Salida "y tiene que decir por que"
+
+    $s = Get-Sesiones $f
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, con sus comillas"
+}
+
+Test-Case "en modo Legacy el runner escapa, y el prompt cruza intacto igual" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $texto = 'El legacy loguea "Session ended" cuando cierra.'
+    $serie = New-Serie $f 'serie-legacy' @{ '01-cita.md' = $texto }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe) -Legacy
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'escapa a mano' $r.Salida "en modo Legacy el runner SI tiene que escapar"
+    Assert-Match 'modo Legacy' $r.Salida "y tiene que decir por que"
+
+    $s = Get-Sesiones $f
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, con sus comillas"
+}
+
+Test-Case "Windows PowerShell 5.1 no puede correr el runner (#Requires -Version 7.0)" {
+    $ps51 = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if (-not $ps51) { Skip-Case "no encontre powershell.exe (Windows PowerShell 5.1) en esta maquina" }
+
+    $f = New-Fixture
+    $salida = & $ps51.Source -NoProfile -ExecutionPolicy Bypass -File $f.Runner -Version 2>&1
+    $code = $LASTEXITCODE
+
+    Assert-True ($code -ne 0) "5.1 tiene que fallar, no correr el script"
+    Assert-Match '#requires' (($salida | ForEach-Object { "$_" }) -join "`n") "y el motivo tiene que ser el #Requires, no otra cosa"
+}
+
 # --- Cierre ---------------------------------------------------------------
 
 Write-Host ""
+$omitidos = if ($script:Omitidos -gt 0) { ", $script:Omitidos omitidos" } else { "" }
 if ($script:Fallados -eq 0) {
-    Write-Host "$script:Pasados casos, todos verdes." -ForegroundColor Green
+    Write-Host "$script:Pasados casos, todos verdes$omitidos." -ForegroundColor Green
 } else {
-    Write-Host "$script:Pasados verdes, $script:Fallados en rojo." -ForegroundColor Red
+    Write-Host "$script:Pasados verdes, $script:Fallados en rojo$omitidos." -ForegroundColor Red
 }
 
 if ($KeepTemp) {

@@ -232,6 +232,38 @@ Argumentos nativos: NO escapa (lo hace PowerShell) -- modo Windows y 'claude' no
 Escapa sólo en los dos casos donde hace falta: `$PSNativeCommandArgumentPassing` en `Legacy`, o un
 `claude` que sea un shim `.cmd`/`.bat` (instalación por npm) bajo el modo `Windows`.
 
+### Qué de todo esto está testeado
+
+Medido el 2026-08-18 contra un `.exe` nativo escrito para esto, que anota cada argumento tal como
+se lo entregó el sistema operativo — ya parseado con `CommandLineToArgvW`, igual que `claude.exe`:
+
+| escenario | sin escapar | escapando a mano |
+| --- | --- | --- |
+| modo `Windows`, a un `.exe` ← **el camino real de hoy** | **intacto** | deformado: cada `"` llega como `\"` |
+| modo `Windows`, a un shim `.cmd` | **partido en 3 pedazos** | intacto |
+| modo `Legacy`, a un `.exe` | **partido en 3 pedazos** | intacto |
+
+"Partido" es el modo de falla grave: el argumento se corta en la comilla y los pedazos de atrás le
+llegan a `claude` como argumentos sueltos. No falla nada — la sesión simplemente lee otra cosa.
+
+Las tres filas que le importan al script son casos de la suite, y corren el runner de verdad contra
+ese `.exe`:
+
+- el prompt cruza intacto hacia un `.exe` nativo (y **ningún pedazo** queda suelto como otro argumento);
+- con un `claude` que es un shim `.cmd`, cruza intacto también;
+- en modo `Legacy`, el runner escapa y cruza intacto igual.
+
+Más un cuarto: **Windows PowerShell 5.1 no puede correr el runner**, y falla por el `#Requires`.
+
+Los tres primeros están verificados por mutación: si se fuerza el runner a *escapar siempre*, el
+caso del `.exe` se pone rojo; si se lo fuerza a *no escapar nunca*, se ponen rojos el del shim
+`.cmd` y el de `Legacy`.
+
+El `.exe` de prueba lo compila **Windows PowerShell 5.1**, que viene con Windows: PowerShell 7 no
+puede generar ejecutables de consola. Es el único uso de 5.1 en el proyecto, y es para construir el
+doble, nunca para correr el runner. En una máquina sin 5.1, esos casos se **omiten con el motivo a
+la vista** (no se saltean en silencio).
+
 ---
 
 ## Desarrollo

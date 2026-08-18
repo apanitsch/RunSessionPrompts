@@ -42,9 +42,14 @@ Dos objetivos, y todo cambio se juzga contra ellos:
 ## 3. Decisiones ya tomadas — no re-litigar
 
 - **El escapado manual de comillas está condicionado, no siempre.** Bajo `pwsh` con un `claude.exe`
-  nativo, PowerShell ya escapa y sumar escapado encima **corrompe** cada `"` del prompt. Medido dos
-  veces, independientemente (ChatNet y AtlasVDT, el mismo día). El script decide una vez al arrancar
-  e **imprime el motivo**. Si aparece evidencia nueva que lo contradiga, frená y reportá.
+  nativo, PowerShell ya escapa y sumar escapado encima **corrompe** cada `"` del prompt. Medido tres
+  veces: dos independientes en los repos de origen (ChatNet y AtlasVDT), y una acá contra un `.exe`
+  nativo hecho para la prueba. El script decide una vez al arrancar e **imprime el motivo**. Si
+  aparece evidencia nueva que lo contradiga, frená y reportá.
+- **Las tres ramas de esa decisión tienen test, y los tests están verificados por mutación**
+  (forzar «escapar siempre» y «no escapar nunca» pone en rojo los casos que corresponden). Si tocás
+  `Test-NecesitaEscapadoNativo` o `ConvertTo-NativeArg`, corré la suite: es lo único que separa este
+  script de degradar prompts en silencio.
 - **`-Worktree` es opcional y viene apagado.** Buspack lo hacía siempre; la mayoría de los repos no
   lo necesita.
 - **Las carpetas que empiezan con `_` no son series**, aunque tengan prompts numerados adentro. Es lo

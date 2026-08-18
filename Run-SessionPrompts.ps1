@@ -247,7 +247,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.1.0'
+$script:RunnerVersion = '1.1.1'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
@@ -616,21 +616,29 @@ if ($fullAuto) {
 # Windows PowerShell 5.1 no lo hace. PowerShell 7.3+ SI, y ahi el escapado a mano se suma
 # encima: doble escapado.
 #
-# MEDIDO (pwsh 7.6.4, Windows 11) pasando el argumento
-#     cita: "texto", ruta C:\x\
-# y leyendo la linea de comandos CRUDA que recibe el proceso hijo (Win32_Process.CommandLine)
-# mas su parseo con CommandLineToArgvW, que es como un .exe nativo lee sus argumentos:
+# MEDIDO (pwsh 7.6.4, Windows 11, 2026-08-18) pasando el argumento
+#     cita: "texto entre comillas", ruta C:\x
+# a un .exe nativo escrito para esto, que anota CADA argumento tal como se lo entrego el sistema
+# operativo -- o sea, ya parseado con CommandLineToArgvW, que es como lee sus argumentos claude.exe:
 #
-#   | modo                          | sin escapar        | escapado a mano                |
-#   |-------------------------------|--------------------|--------------------------------|
-#   | Windows (default 7.x), a .exe | INTACTO            | cita: \"texto\", ruta C:\x\\   |
-#   | Windows (default 7.x), a .cmd | comillas PERDIDAS  | comillas OK (*)                |
-#   | Legacy                        | comillas PERDIDAS  | comillas OK (*)                |
+#   | modo                          | sin escapar          | escapado a mano                |
+#   |-------------------------------|----------------------|--------------------------------|
+#   | Windows (default 7.x), a .exe | INTACTO              | DEFORMADO: cita: \"texto\"...  |
+#   | Windows (default 7.x), a .cmd | PARTIDO en 3 pedazos | INTACTO (*)                    |
+#   | Legacy, a .exe                | PARTIDO en 3 pedazos | INTACTO (*)                    |
+#   | Legacy, a .cmd                | PARTIDO en 3 pedazos | INTACTO (*)                    |
 #
-#   (*) con un efecto colateral medido: un '\' AL FINAL del argumento llega DUPLICADO, porque
-#       las dos capas duplican los backslashes de cierre. Se deja como esta: los prompts no
-#       terminan en backslash, y el interprete donde esto importaria (5.1) ya no puede correr
-#       este script.
+#   "PARTIDO" es el modo de falla grave: el argumento se corta en la comilla y los pedazos de
+#   atras le llegan a claude como argumentos sueltos. No falla nada; la sesion simplemente lee
+#   otra cosa.
+#
+#   (*) con un efecto colateral tambien medido: un '\' AL FINAL del argumento llega DUPLICADO,
+#       porque las dos capas duplican los backslashes de cierre. Se deja como esta: los prompts
+#       no terminan en backslash, y en el camino que se usa hoy (.exe, modo Windows) no se
+#       escapa nada.
+#
+# Las tres filas que le importan al script -- .exe sin escapar, .cmd escapando, Legacy escapando --
+# estan cubiertas por tests que corren el runner de verdad contra ese .exe. Ver tests/Run-Tests.ps1.
 #
 # O sea que en el caso normal de hoy -- 'claude' es claude.exe y el modo es el default -- el
 # escapado a mano no protege: CORROMPE. Por eso se conserva, pero CONDICIONADO a los dos casos
