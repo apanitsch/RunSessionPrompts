@@ -72,13 +72,20 @@ Dos objetivos, y todo cambio se juzga contra ellos:
 Run-SessionPrompts.ps1        el producto
 Install-SessionPrompts.ps1    lo instala y actualiza en otro repo
 templates/                    lo que el instalador copia al destino
+  README.md                   la referencia para los agentes del repo destino
   _plantillas/                moldes de serie y de prompt
   series-estado.txt           molde, no se pisa si ya existe en el destino
   session-prompts.config.json molde, no se pisa si ya existe en el destino
+  prompt-instalacion-claude-md.md  el prompt de la sesion que corre la instalacion
 tests/Run-Tests.ps1           suite, sin dependencias
 docs/analisis-de-versiones.md de dónde salió cada cosa, y qué se descartó
 CHANGELOG.md                  qué cambió en cada versión
 ```
+
+**Los dos documentos que ve el repo destino** —`templates/README.md` y
+`templates/prompt-instalacion-claude-md.md`— son parte del producto, no decoración: el primero es lo
+que un agente lee para saber cómo escribir y correr una serie, y el segundo es lo que hace que el
+andamiaje sea descubrible. Si cambiás una regla del runner, revisá si alguno de los dos la afirma.
 
 ## 5. Dónde está instalado
 

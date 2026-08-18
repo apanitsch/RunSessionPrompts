@@ -6,9 +6,14 @@
     Instala (o actualiza) Run-SessionPrompts.ps1 y sus plantillas en otro repositorio.
 
 .DESCRIPTION
-    Copia el runner, las plantillas y -- la primera vez -- el series-estado.txt y el
-    session-prompts.config.json de ejemplo, a la carpeta de series del repo destino
-    (por defecto docs/session-prompts, o Docs/session-prompts si el repo ya usa esa).
+    Copia el runner, el README del andamiaje, las plantillas y -- la primera vez -- el
+    series-estado.txt y el session-prompts.config.json de ejemplo, a la carpeta de series del
+    repo destino (por defecto docs/session-prompts, o Docs/session-prompts si el repo ya usa esa).
+
+    Al final, y salvo que se pase -SkipClaudeMd, lanza UNA sesion de Claude Code en el repo
+    destino para que deje el andamiaje descubrible en su CLAUDE.md y corrija lo que haya quedado
+    de versiones viejas del script. El prompt de esa sesion es
+    templates/prompt-instalacion-claude-md.md, y se puede editar.
 
     Deja un archivo .session-prompts-version con la version instalada y el hash del runner.
     Con eso, una actualizacion posterior puede distinguir tres situaciones:
@@ -17,8 +22,9 @@
       - no hay marca de version (instalacion vieja, copiada
         y pegada a mano)                                     -> avisa y no pisa (salvo -Force).
 
-    Lo que NUNCA se pisa: las series (las carpetas con los prompts), el series-estado.txt y
-    el session-prompts.config.json que ya existan. Ahi vive el trabajo del repo destino.
+    Lo que NUNCA se pisa: las series (las carpetas con los prompts), el series-estado.txt, el
+    session-prompts.config.json, y un README.md propio del repo que no haya puesto este
+    instalador. Ahi vive el trabajo del repo destino.
 
 .PARAMETER Repo
     Raiz del repo destino. Default: el directorio actual.
@@ -26,6 +32,16 @@
 .PARAMETER SeriesRoot
     Carpeta de series del destino. Default: la que ya exista (docs/session-prompts o
     Docs/session-prompts), o docs/session-prompts si no hay ninguna.
+
+.PARAMETER SkipClaudeMd
+    No lanza la sesion de Claude Code que documenta el andamiaje en el CLAUDE.md del destino.
+    (Con -WhatIf tampoco se lanza.)
+
+.PARAMETER Model
+    Modelo de esa sesion: 'opus' (default) o 'sonnet'.
+
+.PARAMETER Effort
+    Effort de esa sesion: low, medium, high (default), xhigh, max.
 
 .PARAMETER Force
     Pisa el runner aunque este modificado a mano o no tenga marca de version. Antes de
@@ -51,7 +67,17 @@
 param(
     [string]$Repo,
     [string]$SeriesRoot,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$SkipClaudeMd,
+
+    [ValidateSet('opus', 'sonnet')]
+    [string]$Model = 'opus',
+
+    [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
+    [string]$Effort = 'high',
+
+    # Se expone para poder apuntarlo a otra instalacion, o a un doble de prueba.
+    [string]$ClaudeCommand = 'claude'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +121,23 @@ if ([string]::IsNullOrWhiteSpace($SeriesRoot)) {
     if (-not $SeriesRoot) { $SeriesRoot = Join-Path $repoRoot 'docs/session-prompts' }
 }
 
+# Windows no distingue mayusculas, asi que Test-Path acierta con 'docs' aunque en disco diga
+# 'Docs'. Para los mensajes -- y sobre todo para las rutas que van al prompt del CLAUDE.md del
+# destino, que despues quedan escritas ahi -- queremos el nombre tal cual esta en disco.
+function Get-RutaReal([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $path }
+    $item = Get-Item -LiteralPath $path
+    $padre = Split-Path -Parent $item.FullName
+    if ([string]::IsNullOrEmpty($padre)) { return $item.FullName }
+
+    $real = @(Get-ChildItem -LiteralPath $padre -Force -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -ieq $item.Name } | Select-Object -First 1)
+    if ($real.Count -gt 0) { return (Join-Path (Get-RutaReal $padre) $real[0].Name) }
+    return $item.FullName
+}
+
+$SeriesRoot = Get-RutaReal $SeriesRoot
+
 $esInstalacionNueva = -not (Test-Path -LiteralPath (Join-Path $SeriesRoot 'Run-SessionPrompts.ps1'))
 
 Write-Host "Origen : $origen (version $versionOrigen)" -ForegroundColor DarkGray
@@ -112,9 +155,16 @@ function Get-HashArchivo([string]$path) {
 $puedePisar = $true
 $motivo = 'instalacion nueva'
 
+# La marca de la instalacion anterior, si la hay: dice que version quedo y con que hash, tanto
+# del runner como del README.
+$marcaPrevia = $null
+if (Test-Path -LiteralPath $marcaPath) {
+    try { $marcaPrevia = Get-Content -LiteralPath $marcaPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+}
+
 if (-not $esInstalacionNueva) {
-    if (Test-Path -LiteralPath $marcaPath) {
-        $marca = Get-Content -LiteralPath $marcaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($marcaPrevia) {
+        $marca = $marcaPrevia
         $hashActual = Get-HashArchivo $runnerDestino
 
         if ($marca.runnerHash -eq $hashActual) {
@@ -158,6 +208,49 @@ if ($PSCmdlet.ShouldProcess($runnerDestino, "instalar Run-SessionPrompts.ps1 $ve
     Write-Host "Run-SessionPrompts.ps1 -> $versionOrigen" -ForegroundColor Green
 }
 
+# --- El README del andamiaje ----------------------------------------------
+# Es la referencia que van a leer los agentes del repo destino: que es esto, como se corre, y con
+# que criterio se elige el modelo y el effort de cada sesion. Se instala como el runner, pero con
+# una diferencia: si el destino ya tiene un README.md que NO puso este instalador, no se toca.
+# Los repos que venian usando una copia vieja tienen ahi su indice de series y su contexto.
+$readmeOrigen = Join-Path $origen 'templates\README.md'
+$readmeDestino = Join-Path $SeriesRoot 'README.md'
+
+# El hash que va a la marca. SOLO se completa si lo instalamos nosotros: si el destino tiene un
+# README propio y no lo pisamos, guardar su hash lo convertiria en "nuestro" y la proxima corrida
+# lo pisaria sin avisar ni dejar copia.
+$readmeHashParaMarca = if ($marcaPrevia) { $marcaPrevia.readmeHash } else { $null }
+
+if (Test-Path -LiteralPath $readmeOrigen) {
+    $ponerReadme = $true
+    $motivoReadme = 'nuevo'
+
+    if (Test-Path -LiteralPath $readmeDestino) {
+        $hashActualReadme = Get-HashArchivo $readmeDestino
+        if ($marcaPrevia -and $marcaPrevia.readmeHash -eq $hashActualReadme) {
+            $motivoReadme = 'lo habia puesto este instalador, sin modificar'
+        } elseif ($Force) {
+            $motivoReadme = 'propio del repo, pisado por -Force'
+            $bakReadme = "$readmeDestino.bak"
+            if ($PSCmdlet.ShouldProcess($bakReadme, 'guardar copia del README actual')) {
+                Copy-Item -LiteralPath $readmeDestino -Destination $bakReadme -Force
+                Write-Host "Copia del README anterior: $bakReadme" -ForegroundColor DarkGray
+            }
+        } else {
+            $ponerReadme = $false
+            Write-Host "README.md: el destino ya tiene uno propio, no lo piso." -ForegroundColor Yellow
+            Write-Host "  Los criterios de modelo y effort estan en $readmeOrigen" -ForegroundColor DarkGray
+            Write-Host "  (-Force lo reemplaza, dejando un .bak al lado)." -ForegroundColor DarkGray
+        }
+    }
+
+    if ($ponerReadme -and $PSCmdlet.ShouldProcess($readmeDestino, "instalar el README del andamiaje ($motivoReadme)")) {
+        Copy-Item -LiteralPath $readmeOrigen -Destination $readmeDestino -Force
+        Write-Host "README.md instalado ($motivoReadme)" -ForegroundColor Green
+        $readmeHashParaMarca = Get-HashArchivo $readmeDestino
+    }
+}
+
 # Plantillas: se actualizan siempre (son material de referencia, no trabajo del repo).
 $plantillasOrigen = Join-Path $origen 'templates\_plantillas'
 $plantillasDestino = Join-Path $SeriesRoot '_plantillas'
@@ -190,10 +283,100 @@ if ($PSCmdlet.ShouldProcess($marcaPath, "escribir la marca de version")) {
     $marca = [pscustomobject]@{
         version     = $versionOrigen
         runnerHash  = Get-HashArchivo $runnerDestino
+        readmeHash  = $readmeHashParaMarca
         instaladoEl = (Get-Date).ToString('yyyy-MM-dd')
         origen      = $origen
     }
     Set-Content -LiteralPath $marcaPath -Value ($marca | ConvertTo-Json) -Encoding UTF8
+}
+
+# --- La sesion que hace descubrible el andamiaje --------------------------
+# Instalar los archivos no alcanza: si el CLAUDE.md del repo no lo nombra, ningun agente lo va a
+# encontrar, y si el repo venia de una copia vieja puede tener afirmaciones que hoy son falsas
+# (que se corre con 'powershell', que el script escapa las comillas siempre, que el corte es de
+# 30000 caracteres). Esta sesion arregla las dos cosas.
+function Invoke-SesionClaudeMd {
+    $promptPath = Join-Path $origen 'templates\prompt-instalacion-claude-md.md'
+    if (-not (Test-Path -LiteralPath $promptPath)) {
+        Write-Host "No encuentro $promptPath; salteo el paso del CLAUDE.md." -ForegroundColor Yellow
+        return
+    }
+
+    # Mismas reglas de transporte que el runner (ahi esta el porque, medido, y los tests):
+    # el modo se FIJA, y un 'claude' que sea un shim .cmd/.bat trunca los prompts multilinea.
+    if ($null -ne (Get-Variable -Name PSNativeCommandArgumentPassing -ErrorAction SilentlyContinue)) {
+        $PSNativeCommandArgumentPassing = 'Standard'
+    }
+
+    $resuelto = Get-Command $ClaudeCommand -ErrorAction SilentlyContinue
+    if (-not $resuelto) {
+        Write-Host "No encontre '$ClaudeCommand': salteo el paso del CLAUDE.md." -ForegroundColor Yellow
+        Write-Host "  Podes hacerlo despues con: pwsh -File `"$PSCommandPath`" -Repo `"$repoRoot`"" -ForegroundColor DarkGray
+        return
+    }
+    $exe = $resuelto.Source
+    if ($resuelto.CommandType -ne 'Application') { $exe = $ClaudeCommand }
+    elseif ($exe -match '\.(cmd|bat)$') {
+        $hermano = [System.IO.Path]::ChangeExtension($exe, '.exe')
+        $otro = @(Get-Command $ClaudeCommand -All -ErrorAction SilentlyContinue |
+                  Where-Object { $_.CommandType -eq 'Application' -and $_.Source -notmatch '\.(cmd|bat)$' } |
+                  Select-Object -First 1)
+        if ($otro.Count -gt 0) { $exe = $otro[0].Source }
+        elseif (Test-Path -LiteralPath $hermano) { $exe = $hermano }
+        else {
+            Write-Host "'$ClaudeCommand' es un shim $([IO.Path]::GetExtension($exe)) y no hay un .exe equivalente:" -ForegroundColor Yellow
+            Write-Host "  por ese camino el prompt llegaria truncado. Salteo el paso del CLAUDE.md." -ForegroundColor Yellow
+            return
+        }
+    }
+
+    $texto = Get-Content -LiteralPath $promptPath -Raw -Encoding UTF8
+    # El comentario de encabezado es para quien edite la plantilla, no para la sesion.
+    $texto = [regex]::Replace($texto, '(?s)^\s*<!--.*?-->\s*', '')
+
+    $texto = $texto.
+        Replace('{{RUTA_SERIES}}', $SeriesRoot).
+        Replace('{{RUTA_README}}', $readmeDestino).
+        Replace('{{RUTA_RUNNER}}', $runnerDestino).
+        Replace('{{RUTA_REPO}}',   $repoRoot).
+        Replace('{{VERSION}}',     $versionOrigen)
+
+    $modelos = @{ 'opus' = 'claude-opus-5'; 'sonnet' = 'claude-sonnet-5' }
+
+    Write-Host ""
+    Write-Host "Lanzo una sesion de Claude Code para dejar esto documentado en el CLAUDE.md de $repoRoot" -ForegroundColor Cyan
+    Write-Host "  (modelo $Model, effort $Effort; -SkipClaudeMd para saltearlo)" -ForegroundColor DarkGray
+
+    Push-Location -LiteralPath $repoRoot
+    try {
+        $global:LASTEXITCODE = 0
+        # -p: una sola pasada, sin sesion interactiva. acceptEdits para que pueda escribir el
+        # CLAUDE.md sin preguntar por cada edicion.
+        #
+        # El '$null |' cierra stdin: sin eso, 'claude -p' se queda tres segundos esperando datos
+        # por ahi y avisa ("no stdin data received in 3s"). Todo lo que necesita ya va en el
+        # argumento.
+        $null | & $exe -p --model $modelos[$Model] --effort $Effort --permission-mode acceptEdits $texto
+        $code = $LASTEXITCODE
+    } finally { Pop-Location }
+
+    Write-Host ""
+    if ($code -ne 0) {
+        Write-Host "La sesion salio con codigo $code. Los archivos quedaron instalados igual;" -ForegroundColor Yellow
+        Write-Host "revisa a mano el CLAUDE.md de $repoRoot." -ForegroundColor Yellow
+    } else {
+        Write-Host "Listo. Los cambios del CLAUDE.md quedaron SIN COMMITEAR, para que los revises." -ForegroundColor Green
+    }
+}
+
+if ($SkipClaudeMd) {
+    Write-Host ""
+    Write-Host "-SkipClaudeMd: no toco el CLAUDE.md del destino." -ForegroundColor DarkGray
+} elseif ($WhatIfPreference) {
+    Write-Host ""
+    Write-Host "What if: lanzaria una sesion de Claude Code para documentar el andamiaje en el CLAUDE.md de $repoRoot." -ForegroundColor DarkGray
+} else {
+    Invoke-SesionClaudeMd
 }
 
 Write-Host ""
@@ -201,6 +384,7 @@ if ($esInstalacionNueva) {
     Write-Host "Listo. Para arrancar:" -ForegroundColor Cyan
     Write-Host "  1. Crea la carpeta de tu primera serie: $SeriesRoot\<mi-serie>\" -ForegroundColor DarkGray
     Write-Host "  2. Copia _plantillas\plantilla-session-prompt.md a <mi-serie>\01-....md y completala." -ForegroundColor DarkGray
+    Write-Host "     (los criterios de modelo y effort estan en $readmeDestino)" -ForegroundColor DarkGray
     Write-Host "  3. pwsh -File `"$runnerDestino`"" -ForegroundColor DarkGray
 } else {
     Write-Host "Actualizado a $versionOrigen. Revisa el CHANGELOG del runner por si cambio algo que uses." -ForegroundColor Cyan

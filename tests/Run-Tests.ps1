@@ -205,6 +205,10 @@ function New-RepoVacio {
 }
 
 function Invoke-Instalador([string]$repo, [string[]]$argumentos) {
+    # Por defecto NO se lanza la sesion de Claude: los casos que la prueban pasan -ClaudeCommand
+    # con el doble y sacan el -SkipClaudeMd.
+    if (-not ($argumentos -contains '-ClaudeCommand')) { $argumentos = @('-SkipClaudeMd') + $argumentos }
+
     $todos = @('-NoProfile', '-File', $script:Instalador, '-Repo', $repo) + $argumentos
     $salida = & pwsh @todos 2>&1
     return [pscustomobject]@{
@@ -674,8 +678,9 @@ Test-Case "el instalador deja el runner, las plantillas y los moldes en un repo 
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
 
     $destino = Join-Path $repo 'docs\session-prompts'
-    foreach ($archivo in @('Run-SessionPrompts.ps1', 'series-estado.txt', 'session-prompts.config.json',
-                           '.session-prompts-version', '_plantillas\plantilla-session-prompt.md')) {
+    foreach ($archivo in @('Run-SessionPrompts.ps1', 'README.md', 'series-estado.txt',
+                           'session-prompts.config.json', '.session-prompts-version',
+                           '_plantillas\plantilla-session-prompt.md')) {
         Assert-True (Test-Path -LiteralPath (Join-Path $destino $archivo)) "falta $archivo"
     }
 
@@ -1026,6 +1031,97 @@ Test-Case "el nombre de la serie y del prompt tambien cruzan intactos hacia --rc
     Assert-Equal $esperado (Get-ArgValue $s[0] '--rc') "el nombre de sesion de Remote Control"
     Assert-Equal $esperado (Get-ArgValue $s[0] '--name') "el nombre visible de la sesion"
     Assert-Equal 11 @($s[0].Args).Count "y nada se partio en el camino"
+}
+
+Test-Case "el README que instala explica los criterios de modelo y de effort" {
+    $repo = New-RepoVacio
+    Invoke-Instalador $repo @() | Out-Null
+
+    $readme = Get-Content -LiteralPath (Join-Path $repo 'docs\session-prompts\README.md') -Raw -Encoding UTF8
+
+    Assert-Match 'modelo-sugerido' $readme "tiene que documentar la marca de modelo"
+    Assert-Match 'effort-sugerido' $readme "tiene que documentar la marca de effort"
+    Assert-Match 'tope' $readme "y la regla del tope"
+    Assert-Match 'sonnet' $readme "con criterio para elegir modelo"
+    Assert-Match 'xhigh' $readme "y para elegir effort"
+    Assert-Match 'pwsh' $readme "y como se corre"
+    Assert-NotMatch 'powershell -File' $readme "nunca con powershell"
+}
+
+Test-Case "un README propio del repo no se pisa, salvo con -Force" {
+    $repo = New-RepoVacio
+    $destino = Join-Path $repo 'docs\session-prompts'
+    New-Item -ItemType Directory -Path $destino -Force | Out-Null
+    $readme = Join-Path $destino 'README.md'
+    Set-Content -LiteralPath $readme -Value '# El indice de series de este repo' -Encoding UTF8
+
+    $r = Invoke-Instalador $repo @()
+    Assert-Equal 0 $r.ExitCode "la instalacion tiene que seguir. Salida:`n$($r.Salida)"
+    Assert-Match 'ya tiene uno propio' $r.Salida "tiene que avisar que no lo pisa"
+    Assert-Match 'El indice de series de este repo' (Get-Content -LiteralPath $readme -Raw -Encoding UTF8) "y no haberlo tocado"
+
+    $r2 = Invoke-Instalador $repo @('-Force')
+    Assert-Equal 0 $r2.ExitCode "con -Force. Salida:`n$($r2.Salida)"
+    Assert-Match 'series de sesiones' (Get-Content -LiteralPath $readme -Raw -Encoding UTF8) "con -Force lo reemplaza"
+    Assert-True (Test-Path -LiteralPath "$readme.bak") "dejando el .bak"
+
+    # Y una reinstalacion posterior ya lo reconoce como suyo y lo actualiza sin quejarse.
+    $r3 = Invoke-Instalador $repo @()
+    Assert-Equal 0 $r3.ExitCode "reinstalacion. Salida:`n$($r3.Salida)"
+    Assert-NotMatch 'ya tiene uno propio' $r3.Salida "ya es el nuestro: no tiene que quejarse"
+}
+
+Test-Case "la instalacion lanza una sesion de Claude con el prompt del CLAUDE.md" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $repo = New-RepoVacio
+    $env:FAKE_CLAUDE_LOG = Join-Path $repo 'claude.log'
+
+    $r = Invoke-Instalador $repo @('-ClaudeCommand', $script:EcoExe, '-Model', 'sonnet', '-Effort', 'low')
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    Assert-True (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG) "tenia que haber lanzado la sesion"
+    $args_ = @((Get-Content -LiteralPath $env:FAKE_CLAUDE_LOG -Raw -Encoding UTF8 | ConvertFrom-Json).Args)
+
+    Assert-True ($args_ -contains '-p') "en modo -p: una pasada, sin sesion interactiva"
+    Assert-Equal 'claude-sonnet-5' (Get-ArgValue @{ Args = $args_ } '--model') "el modelo que se pidio"
+    Assert-Equal 'low' (Get-ArgValue @{ Args = $args_ } '--effort') "el effort que se pidio"
+    Assert-Equal 'acceptEdits' (Get-ArgValue @{ Args = $args_ } '--permission-mode') "para que pueda escribir el CLAUDE.md"
+
+    $prompt = $args_[-1]
+    Assert-NotMatch '\{\{' $prompt "no pueden quedar marcadores sin reemplazar"
+    Assert-NotMatch 'El instalador reemplaza los marcadores' $prompt "el comentario de la plantilla no se manda"
+    Assert-Match 'CLAUDE\.md' $prompt "el prompt tiene que hablar del CLAUDE.md"
+    Assert-Match 'powershell' $prompt "y de las afirmaciones viejas que hay que corregir"
+    Assert-Match ([regex]::Escape((Join-Path $repo 'docs\session-prompts\README.md'))) $prompt "con la ruta real del README instalado"
+}
+
+Test-Case "-SkipClaudeMd no lanza ninguna sesion" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $repo = New-RepoVacio
+    $env:FAKE_CLAUDE_LOG = Join-Path $repo 'claude.log'
+
+    $r = Invoke-Instalador $repo @('-SkipClaudeMd', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'no toco el CLAUDE.md' $r.Salida "tiene que decirlo"
+    Assert-True (-not (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG)) "no puede haber lanzado nada"
+}
+
+Test-Case "-WhatIf no instala nada ni lanza la sesion" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $repo = New-RepoVacio
+    $env:FAKE_CLAUDE_LOG = Join-Path $repo 'claude.log'
+
+    $r = Invoke-Instalador $repo @('-WhatIf', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $repo 'docs\session-prompts\Run-SessionPrompts.ps1'))) "no tenia que copiar nada"
+    Assert-True (-not (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG)) "ni lanzar la sesion"
+    Assert-Match 'lanzaria una sesion' $r.Salida "pero si decir que la lanzaria"
 }
 
 # --- Cierre ---------------------------------------------------------------

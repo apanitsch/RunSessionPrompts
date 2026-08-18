@@ -6,6 +6,39 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.3.0] — 2026-08-18
+
+Instalar los archivos no alcanzaba: si el `CLAUDE.md` del repo no nombra el andamiaje, ningún agente
+lo encuentra; y si el repo venía de una copia vieja, lo que ahí dice puede ser falso hoy.
+
+### Agregado
+
+- **La instalación deja un `README.md` en la carpeta de series**, escrito para los agentes que
+  trabajen en ese repo: qué es el andamiaje, cómo se corre, cómo se arma una serie, y —lo que no
+  estaba en ningún lado— **los criterios para elegir modelo y effort de cada sesión**, con una tabla
+  de qué usar según la sesión *escriba*, *repita*, *juzgue* o *juzgue algo difícil*, y las dos
+  advertencias que importan (que el effort alto no arregla un prompt vago, y que una sesión que
+  tiene que adivinar el criterio en realidad juzga).
+- **La instalación lanza una sesión de Claude Code en el repo destino** que deja el andamiaje
+  descubrible en su `CLAUDE.md` y **corrige las afirmaciones viejas** de versiones anteriores del
+  script (`powershell` en vez de `pwsh`, "escapa las comillas siempre", "corta en 30000 caracteres",
+  un id de modelo viejo, "cada serie corre en un worktree", "editá el script para cambiar la rama
+  base"). Corre con `-p`, deja los cambios sin commitear, y usa las mismas reglas de transporte que
+  el runner. Se saltea con `-SkipClaudeMd`; el modelo y el effort se eligen con `-Model` y `-Effort`.
+  El prompt vive en `templates/prompt-instalacion-claude-md.md` y se puede editar.
+
+### Corregido
+
+- El instalador guardaba en `.session-prompts-version` el hash de un `README.md` **propio del repo**
+  aunque no lo hubiera puesto él. La siguiente actualización lo tomaba por suyo y lo pisaba sin
+  avisar ni dejar copia. Ahora sólo registra el hash de lo que instaló. (Lo encontró el test que
+  verifica que un README ajeno no se pisa.)
+- El instalador reporta la carpeta de series con **el nombre que tiene en disco** (`Docs` o `docs`),
+  y no el de la variante con la que la encontró: en Windows las dos existen para `Test-Path`, y esas
+  rutas terminan escritas en el `CLAUDE.md` del destino.
+- La sesión de instalación cierra stdin, así `claude -p` no se queda tres segundos esperando datos
+  que nunca van a llegar.
+
 ## [1.2.1] — 2026-08-18
 
 Salió de pasar los **439 prompts reales** de los ocho repos de origen por el runner, contra el
@@ -165,7 +198,8 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...v1.1.1

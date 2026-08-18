@@ -52,8 +52,27 @@ pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.
 ```
 
 Eso deja en `MiRepo\docs\session-prompts\` (o `Docs\session-prompts\`, si el repo ya usa esa
-convención): el runner, `_plantillas/`, un `series-estado.txt` y un `session-prompts.config.json` de
-ejemplo, y un `.session-prompts-version` con la versión y el hash de lo instalado.
+convención):
+
+| Qué | Para qué |
+| --- | --- |
+| `Run-SessionPrompts.ps1` | el runner |
+| `README.md` | **la referencia para los agentes del repo**: qué es el andamiaje, cómo se corre, y los criterios para elegir modelo y effort de cada sesión |
+| `_plantillas/` | los moldes de una serie y de un prompt |
+| `series-estado.txt` | qué series están pendientes y en qué orden (sólo la primera vez) |
+| `session-prompts.config.json` | lo que ese repo fija por defecto (sólo la primera vez) |
+| `.session-prompts-version` | versión y hashes de lo instalado |
+
+Y después **lanza una sesión de Claude Code en el repo destino** para dejar el andamiaje
+descubrible: que el `CLAUDE.md` de ese repo lo nombre, diga para qué sirve, cómo se corre y que la
+referencia es ese `README.md`. La misma sesión **corrige las afirmaciones viejas** que el repo tenga
+de versiones anteriores del script — `powershell` en vez de `pwsh`, "el script escapa siempre", "el
+corte es 30000", un id de modelo viejo, "cada serie corre en un worktree". Los cambios quedan **sin
+commitear**, para que los revises.
+
+El prompt de esa sesión es [`templates/prompt-instalacion-claude-md.md`](templates/prompt-instalacion-claude-md.md)
+y se puede editar. Con `-SkipClaudeMd` no se lanza; con `-Model` y `-Effort` se elige con qué corre
+(por defecto `opus` y `high`).
 
 Para **actualizar**, el mismo comando. El instalador no pisa nada que no haya puesto él:
 
@@ -63,6 +82,7 @@ Para **actualizar**, el mismo comando. El instalador no pisa nada que no haya pu
 | El runner está **modificado a mano** | Avisa, muestra cómo diferenciarlo, y **no toca nada** (sale con código 2) |
 | Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada |
 | Las series, el `series-estado.txt`, el `session-prompts.config.json` | **Nunca** se pisan |
+| Un `README.md` propio del repo (los ocho originales tienen el suyo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
 
 Con `-Force` pisa igual, dejando un `.bak` al lado. Con `-WhatIf` dice qué haría y no toca nada.
 
