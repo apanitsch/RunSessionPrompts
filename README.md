@@ -76,7 +76,7 @@ con `-SeriesRoot`.
 
 ## Uso
 
-> **Siempre con `pwsh`, nunca con `powershell`.** Ver [Por qué PowerShell 7](#por-qué-powershell-7-y-no-51).
+> **Siempre con `pwsh`, nunca con `powershell`.** Ver [Cómo llega el prompt hasta Claude](#cómo-llega-el-prompt-hasta-claude).
 
 ```bash
 pwsh -File .\Run-SessionPrompts.ps1
@@ -206,63 +206,79 @@ convivir con las de verdad sin ensuciar el menú.
 
 ---
 
-## Por qué PowerShell 7, y no 5.1
+## Cómo llega el prompt hasta Claude
 
-El prompt entero viaja como **un argumento** hacia `claude`, y casi todos los prompts citan algo
-entre comillas. Medido en esta máquina con un fragmento real de prompt:
+El prompt entero viaja como **un argumento**. Casi todos citan algo entre comillas, muchos traen
+JSON o XML con sus escapes, y **todos son multilínea**. Que eso cruce intacto la línea de comandos
+de Windows es lo único que garantiza que la sesión lea lo que escribiste.
 
-| Intérprete | Lo que recibe el ejecutable |
-| --- | --- |
-| Windows PowerShell 5.1, sin escapar | `el legacy loguea Session` ← **se corta en la primera comilla** |
-| Windows PowerShell 5.1, escapando a mano | el texto entero, pero **sin las comillas** |
-| PowerShell 7.x | el texto **intacto**, comillas incluidas |
+Hay tres cosas que lo pueden romper, y el runner se ocupa de las tres.
 
-O sea que bajo 5.1 todo prompt que cite algo entre comillas dobles llega mutilado **en silencio**:
-nada falla, nada se pone rojo, y la sesión lee una cita distinta de la que se escribió. Por eso el
-script tiene `#Requires -Version 7.0`: falla con un error claro en vez de degradar el prompt.
+### 1. Windows PowerShell 5.1 no puede correr esto
 
-Y por eso el escapado manual heredado de 5.1 **no se aplica siempre**. Bajo 7.x con un `claude.exe`
-nativo, PowerShell ya escapa por su cuenta y sumar escapado encima **corrompe** (cada `"` llega como
-`\"`). El script decide una vez, al arrancar, y **lo escribe en el log**:
+Medido: bajo 5.1 un argumento con comillas dobles llega **mutilado** — sin escapar se parte en la
+primera comilla; escapando a mano llega entero pero sin las comillas. Bajo 7.x llega intacto. Como
+degrada **en silencio**, el script tiene `#Requires -Version 7.0` y falla con un error claro.
 
-```
-Argumentos nativos: NO escapa (lo hace PowerShell) -- modo Windows y 'claude' no es un shim .cmd/.bat
-```
+Por eso: **`pwsh -File …`, nunca `powershell -File …`**.
 
-Escapa sólo en los dos casos donde hace falta: `$PSNativeCommandArgumentPassing` en `Legacy`, o un
-`claude` que sea un shim `.cmd`/`.bat` (instalación por npm) bajo el modo `Windows`.
+### 2. El modo de pasaje de argumentos se fija, no se adivina
+
+`$PSNativeCommandArgumentPassing` decide si PowerShell escapa los argumentos nativos. Un perfil, o
+quien te llame, lo puede haber dejado en `Legacy` — y ahí el prompt se parte igual que en 5.1.
+
+Hasta la 1.1.1 el runner detectaba eso y lo compensaba escapando a mano. Ahora hace algo más
+simple y más seguro: **lo fija en `Standard` para sí mismo**. Medido: con el llamador en `Legacy`,
+fijarlo alcanza para que todo llegue intacto, incluso el backslash final que el escapado manual
+duplicaba. El escapado a mano quedó sólo para PowerShell 7.0–7.2, donde esa variable todavía no
+existe.
+
+### 3. Un `claude` que sea un shim `.cmd` no sirve — y el runner no arranca
+
+Si Claude Code se instaló por npm, en el `PATH` queda un `claude.cmd`. Pasar el prompt por ahí lo
+rompe, y de la peor manera posible. Medido con 21 payloads hostiles:
+
+- un prompt **multilínea llega truncado en su primera línea**, sin error ni aviso — y todos los
+  prompts de sesión son multilínea, así que eso solo no deja nada en pie;
+- `%PATH%` y compañía los **expande cmd**: al prompt le entra el PATH de la máquina;
+- un `<` o un `>` (o sea, cualquier prompt con XML o HTML) hace **fallar** la invocación;
+- un `\` final llega duplicado.
+
+No hay escapado que arregle eso: son reglas de `cmd.exe`, no de `CommandLineToArgvW`. Así que el
+runner primero busca el `.exe` equivalente (mismo nombre en el `PATH`, o al lado del shim) y lo
+usa; si no hay ninguno, **no arranca** y explica qué hacer. Es la misma regla que el corte por
+tamaño: mejor una corrida que no empieza que una serie entera leyendo la primera línea de cada
+prompt.
 
 ### Qué de todo esto está testeado
 
-Medido el 2026-08-18 contra un `.exe` nativo escrito para esto, que anota cada argumento tal como
-se lo entregó el sistema operativo — ya parseado con `CommandLineToArgvW`, igual que `claude.exe`:
+Todo se mide contra un `.exe` nativo escrito para eso, que anota cada argumento tal como se lo
+entregó el sistema operativo — ya parseado con `CommandLineToArgvW`, igual que `claude.exe`. Los
+casos de la suite:
 
-| escenario | sin escapar | escapando a mano |
-| --- | --- | --- |
-| modo `Windows`, a un `.exe` ← **el camino real de hoy** | **intacto** | deformado: cada `"` llega como `\"` |
-| modo `Windows`, a un shim `.cmd` | **partido en 3 pedazos** | intacto |
-| modo `Legacy`, a un `.exe` | **partido en 3 pedazos** | intacto |
+| Caso | Qué verifica |
+| --- | --- |
+| **21 payloads hostiles** | comillas dobles pares (`""`) e impares, comillas simples, backticks (`` ` ``, ``` `` ```), acentos agudos (`´´`) y comillas tipográficas, `<caso>\'</caso>`, XML con atributos y `CDATA`, HTML con entidades, JSON escapado (`{ "p": "v \n \" \' v" }`), JSON con rutas `C:\\temp\\`, un bloque ` ```json ` multilínea, todo combinado, backslash final, metacaracteres de shell (`& \| > < ^ ( ) ;`), `%PATH%`/`%1`/`!DELAYED!`, multilínea, unicode y emoji, y un prompt que empieza con `--dangerously-skip-permissions` |
+| **Nombres de serie y de archivo** | también viajan (a `--rc` y `--name`): una serie llamada `rara & ^ %PATH% 'sim' ``bt`` (p) #h $p ~t !b …` llega entera |
+| **`.exe` nativo** | el prompt cruza intacto y **ningún pedazo** queda suelto como otro argumento |
+| **Shim `.cmd` con `.exe` al lado** | el runner esquiva el shim y usa el ejecutable |
+| **Shim `.cmd` sin `.exe`** | el runner **no arranca**, y dice por qué |
+| **Modo `Legacy` heredado** | el runner fija el modo y el prompt cruza intacto igual |
+| **Windows PowerShell 5.1** | no puede correr el runner: falla por el `#Requires` |
 
-"Partido" es el modo de falla grave: el argumento se corta en la comilla y los pedazos de atrás le
-llegan a `claude` como argumentos sueltos. No falla nada — la sesión simplemente lee otra cosa.
+Verificado por mutación — un test que no puede fallar no prueba nada:
 
-Las tres filas que le importan al script son casos de la suite, y corren el runner de verdad contra
-ese `.exe`:
-
-- el prompt cruza intacto hacia un `.exe` nativo (y **ningún pedazo** queda suelto como otro argumento);
-- con un `claude` que es un shim `.cmd`, cruza intacto también;
-- en modo `Legacy`, el runner escapa y cruza intacto igual.
-
-Más un cuarto: **Windows PowerShell 5.1 no puede correr el runner**, y falla por el `#Requires`.
-
-Los tres primeros están verificados por mutación: si se fuerza el runner a *escapar siempre*, el
-caso del `.exe` se pone rojo; si se lo fuerza a *no escapar nunca*, se ponen rojos el del shim
-`.cmd` y el de `Legacy`.
+| Si se rompe el runner así… | …se ponen en rojo |
+| --- | --- |
+| escapar siempre | el `.exe` nativo, los 21 payloads, el shim y `Legacy` |
+| no escapar nunca | los casos que dependen del escapado en 7.0–7.2 |
+| no fijar el modo | el caso de `Legacy` |
+| aceptar el shim `.cmd` tal cual | los dos casos de shim |
 
 El `.exe` de prueba lo compila **Windows PowerShell 5.1**, que viene con Windows: PowerShell 7 no
 puede generar ejecutables de consola. Es el único uso de 5.1 en el proyecto, y es para construir el
-doble, nunca para correr el runner. En una máquina sin 5.1, esos casos se **omiten con el motivo a
-la vista** (no se saltean en silencio).
+doble, nunca para correr el runner. En una máquina sin 5.1 esos casos se **omiten con el motivo a
+la vista**, no en silencio.
 
 ---
 

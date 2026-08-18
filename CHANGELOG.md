@@ -6,6 +6,45 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.2.0] — 2026-08-18
+
+Salió de probar el transporte del prompt con payloads hostiles: comillas dobles pares e impares,
+backticks, acentos agudos y comillas tipográficas, `<caso>\'</caso>`, XML, HTML, JSON con sus
+escapes internos, combinaciones, metacaracteres de shell, `%VARIABLES%`, multilínea, unicode y
+emoji. **En el camino normal (`claude.exe` bajo `pwsh`) los 21 payloads ya llegaban intactos.** Los
+otros dos caminos no.
+
+### Cambiado
+
+- **El modo de pasaje de argumentos ahora se fija, no se adivina.** El runner pone
+  `$PSNativeCommandArgumentPassing = 'Standard'` para su propio ámbito, en vez de detectar que
+  alguien lo dejó en `Legacy` y compensarlo escapando a mano. Medido: además de ser más simple,
+  arregla el único payload que el escapado manual todavía deformaba (un `\` al final del prompt
+  llegaba duplicado). El escapado a mano quedó sólo para PowerShell 7.0–7.2, donde esa variable
+  todavía no existe.
+
+### Corregido
+
+- **Un `claude` que resuelve a un shim `.cmd`/`.bat` ya no corrompe la corrida en silencio.** Medido
+  por ese camino: un prompt **multilínea llega truncado en su primera línea** sin aviso —y todos los
+  prompts son multilínea—, `%PATH%` lo expande cmd, y un `<` o un `>` (cualquier prompt con XML o
+  HTML) hace fallar la invocación. Ahora el runner busca el `.exe` equivalente (mismo nombre en el
+  `PATH`, o al lado del shim) y lo usa; si no hay ninguno, **no arranca** y explica qué hacer. Pasa
+  con instalaciones por npm, que dejan un `claude.cmd` en el `PATH`.
+
+### Agregado
+
+- Los 21 payloads hostiles como caso de la suite, más uno que verifica que el nombre de la serie y
+  del archivo del prompt —que viajan a `--rc` y `--name`— sobrevivan a caracteres como `&`, `^`,
+  `%VAR%`, comillas simples, backticks y `!`.
+- Casos para los dos caminos nuevos del shim: con `.exe` al lado (lo usa) y sin `.exe` (no arranca).
+
+### Nota
+
+- Los tests nuevos están verificados por mutación: no fijar el modo pone en rojo el caso de
+  `Legacy`; aceptar el shim tal cual pone en rojo los dos casos de shim; escapar siempre pone en
+  rojo los payloads y el `.exe` nativo.
+
 ## [1.1.1] — 2026-08-18
 
 Sin cambios de comportamiento: lo que cambia es cuánto de esto está *verificado*.
@@ -97,7 +136,8 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.0.0

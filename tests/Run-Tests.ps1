@@ -288,10 +288,16 @@ function Initialize-EcoExe {
 # Shim .cmd al estilo del que deja npm: reenvia %* a un ejecutable nativo. Es el otro camino que
 # el runner tiene que reconocer, porque ahi PowerShell NO escapa por su cuenta.
 function New-EcoShim($fixture) {
+    # El .exe se copia AL LADO del shim y con el mismo nombre base: es la forma que tiene una
+    # instalacion real (claude.cmd junto a claude.exe), y es lo que el runner busca para
+    # esquivar el shim.
+    $exeAlLado = Join-Path $fixture.Repo 'eco-claude.exe'
+    Copy-Item -LiteralPath $script:EcoExe -Destination $exeAlLado -Force
+
     $shim = Join-Path $fixture.Repo 'eco-claude.cmd'
     Set-Content -LiteralPath $shim -Encoding ASCII -Value @(
         '@echo off',
-        ('"' + $script:EcoExe + '" %*')
+        ('"' + $exeAlLado + '" %*')
     )
     return $shim
 }
@@ -753,39 +759,59 @@ Test-Case "el prompt cruza INTACTO la linea de comandos hacia un .exe nativo" {
     Assert-True (-not ($anteriores | Where-Object { $_ -match 'Session|legacy|temp' })) "ningun pedazo del prompt puede haber quedado suelto como otro argumento"
 }
 
-Test-Case "con un 'claude' que es un shim .cmd, el prompt tambien cruza intacto" {
+Test-Case "un 'claude' que es un shim .cmd con el .exe al lado: usa el .exe" {
     Initialize-EcoExe
     if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
 
     $f = New-Fixture
-    $shim = New-EcoShim $f
-    $texto = 'El legacy loguea "Session ended" cuando cierra.'
+    $shim = New-EcoShim $f   # queda al lado de una copia del .exe, con el mismo nombre
+    $texto = "El legacy loguea `"Session ended`" cuando cierra.`nY esta segunda linea tambien tiene que llegar."
     $serie = New-Serie $f 'serie-shim' @{ '01-cita.md' = $texto }
 
     $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $shim)
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
-    Assert-Match 'escapa a mano' $r.Salida "con un shim .cmd, el runner SI tiene que escapar"
-    Assert-Match 'es un shim \.cmd' $r.Salida "y tiene que decir por que"
+    Assert-Match 'resolvia a un shim' $r.Salida "tiene que avisar que cambio el shim por el ejecutable"
 
     $s = Get-Sesiones $f
-    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, con sus comillas"
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt multilinea tiene que llegar ENTERO"
 }
 
-Test-Case "en modo Legacy el runner escapa, y el prompt cruza intacto igual" {
+Test-Case "un shim .cmd SIN ejecutable al lado: el runner no arranca, y dice por que" {
     Initialize-EcoExe
     if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
 
     $f = New-Fixture
-    $texto = 'El legacy loguea "Session ended" cuando cierra.'
+    # El shim vive solo, sin ningun .exe con su nombre: no hay a que caerse.
+    $soloShim = Join-Path $f.Repo 'solo\claude.cmd'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $soloShim) -Force | Out-Null
+    Set-Content -LiteralPath $soloShim -Encoding ASCII -Value @('@echo off', ('"' + $script:EcoExe + '" %*'))
+
+    $serie = New-Serie $f 'serie-solo-shim' @{ '01-cita.md' = "linea uno`nlinea dos" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $soloShim)
+    Assert-True ($r.ExitCode -ne 0) "tiene que negarse a arrancar"
+    Assert-Match 'resuelve a un shim' $r.Salida "con el motivo"
+    Assert-Match 'se trunca en su primera linea' $r.Salida "y explicando que se pierde"
+    Assert-Match 'ClaudeCommand' $r.Salida "y que hacer al respecto"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no puede haber lanzado ninguna sesion"
+}
+
+Test-Case "si el llamador dejo el modo en Legacy, el runner lo fija y el prompt cruza intacto" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    # Con el modo en Legacy y sin hacer nada, esto se parte en la primera comilla y ademas
+    # pierde el backslash final. El runner fija el modo para si mismo, asi que no pasa.
+    $texto = "El legacy loguea `"Session ended`" cuando cierra.`nRuta: C:\temp\x\"
     $serie = New-Serie $f 'serie-legacy' @{ '01-cita.md' = $texto }
 
     $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe) -Legacy
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
-    Assert-Match 'escapa a mano' $r.Salida "en modo Legacy el runner SI tiene que escapar"
-    Assert-Match 'modo Legacy' $r.Salida "y tiene que decir por que"
+    Assert-Match "modo fijado en 'Standard'" $r.Salida "el runner tiene que fijar el modo, no compensarlo escapando"
 
     $s = Get-Sesiones $f
-    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, con sus comillas"
+    Assert-Equal $texto (Get-PromptTexto $s[0]) "el prompt tiene que llegar tal cual, hasta el backslash final"
 }
 
 Test-Case "Windows PowerShell 5.1 no puede correr el runner (#Requires -Version 7.0)" {
@@ -798,6 +824,145 @@ Test-Case "Windows PowerShell 5.1 no puede correr el runner (#Requires -Version 
 
     Assert-True ($code -ne 0) "5.1 tiene que fallar, no correr el script"
     Assert-Match '#requires' (($salida | ForEach-Object { "$_" }) -join "`n") "y el motivo tiene que ser el #Requires, no otra cosa"
+}
+
+Test-Case "los payloads hostiles cruzan intactos: comillas, backticks, XML, HTML, JSON escapado" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    # Cada payload va en un here-string de comillas simples: adentro no hay escapado de
+    # PowerShell, asi que lo que se lee aca es LITERALMENTE lo que tiene que llegar.
+    $payloads = [ordered]@{}
+
+    $payloads['comillas-dobles-pares'] = @'
+dos comillas dobles seguidas: "" y otro par ""
+'@
+    $payloads['comilla-doble-impar'] = @'
+una sola comilla doble: " y sigue el texto
+'@
+    $payloads['comillas-anidadas'] = @'
+el mensaje "dice ""esto"" adentro" y termina
+'@
+    $payloads['backticks'] = @'
+backtick simple `codigo`, doble `` y triple ``` bloque ```
+'@
+    $payloads['comillas-simples'] = @'
+dos comillas simples: '' y un par ' ' y una sola '
+'@
+    $payloads['comilla-simple-escapada'] = @'
+<caso>\'</caso>
+'@
+    $payloads['xml'] = @'
+<root attr="valor" otro='simple'><![CDATA[texto con " y ' y & y < ]]><vacio /></root>
+'@
+    $payloads['html'] = @'
+<div class="x" onclick='f("a")'>&amp; &lt; &quot; &#39; <br/></div>
+'@
+    $payloads['json-escapado'] = @'
+{ "propiedad": "valor \n  \" \' valor" }
+'@
+    $payloads['json-con-rutas'] = @'
+{"path":"C:\\temp\\x\\","cita":"dijo \"hola\"","fin":"\\"}
+'@
+    $payloads['json-en-bloque-multilinea'] = @'
+Mandale exactamente este cuerpo:
+
+```json
+{ "a": "b \" c", "d": [1, 2], "e": "linea1\nlinea2", "f": "simple \' escapada" }
+```
+'@
+    $payloads['combinado'] = @'
+"" '' `` \\ \" \' <a b="c" d='e'> {"k": "v \" w"} y ``` fin
+'@
+    $payloads['backslash-final'] = @'
+la ruta es C:\temp\x\
+'@
+    $payloads['metacaracteres-de-shell'] = @'
+shell: & | > < ^ ( ) ; redireccion 2>&1 y tuberia a | more
+'@
+    $payloads['variables-de-entorno'] = @'
+variables: %PATH% %1 %* !DELAYED! $env:PATH $(whoami) ${x}
+'@
+    $payloads['multilinea-con-comillas'] = @'
+primera linea con "comillas dobles"
+segunda con 'simples'
+tercera con `backticks` y \" escapado
+'@
+    $payloads['guion-al-principio'] = @'
+--dangerously-skip-permissions parece un flag pero es el texto del prompt
+'@
+
+    # Los que no se pueden escribir literalmente sin romper este archivo: PowerShell 7 trata
+    # las comillas tipograficas como delimitadores de string.
+    $payloads['acentos-agudos-y-tipograficas'] =
+        'agudos: ' + [char]0xB4 + [char]0xB4 + ' dos seguidos, uno solo ' + [char]0xB4 +
+        ' y tipograficas ' + [char]0x201C + [char]0x201D + [char]0x2018 + [char]0x2019 + ' fin'
+
+    $payloads['unicode-y-emoji'] =
+        'acentos: ' + [char]0xF3 + ' ' + [char]0xF1 + ' | CJK: ' + [char]0x4E2D + [char]0x6587 +
+        ' | emoji: ' + [char]::ConvertFromUtf32(0x1F600) + ' | cirilico: ' + [char]0x0416
+
+    $f = New-Fixture
+    $serieDir = Join-Path $f.SeriesRoot 'serie-hostil'
+    New-Item -ItemType Directory -Path $serieDir -Force | Out-Null
+
+    $n = 0
+    $esperados = [ordered]@{}
+    foreach ($nombre in $payloads.Keys) {
+        $n++
+        $archivo = Join-Path $serieDir ("{0:D2}-{1}.md" -f $n, $nombre)
+        # -NoNewline: lo esperado es EXACTAMENTE el payload, sin el salto que agrega Set-Content.
+        Set-Content -LiteralPath $archivo -Value $payloads[$nombre] -Encoding UTF8 -NoNewline
+        $esperados[$nombre] = Get-Content -LiteralPath $archivo -Raw -Encoding UTF8
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serieDir, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $sesiones = Get-Sesiones $f
+    Assert-Equal $payloads.Count $sesiones.Count "tienen que haber corrido todos los payloads"
+
+    $rotos = @()
+    $i = 0
+    foreach ($nombre in $payloads.Keys) {
+        $args_ = @($sesiones[$i].Args)
+        $recibido = if ($args_.Count) { $args_[-1] } else { '' }
+        $i++
+
+        if ($args_.Count -ne 11) {
+            # 5 flags con su valor + el prompt. Mas argumentos = el prompt se PARTIO.
+            $rotos += "$nombre (partido en $($args_.Count) argumentos)"
+        } elseif ($recibido -ne $esperados[$nombre]) {
+            $rotos += "$nombre (deformado: llego [$($recibido -replace "`n", '\n')])"
+        }
+    }
+
+    Assert-True ($rotos.Count -eq 0) ("estos payloads no llegaron intactos:`n      " + ($rotos -join "`n      "))
+}
+
+Test-Case "el nombre de la serie y del prompt tambien cruzan intactos hacia --rc y --name" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+
+    # Todo esto es legal en un nombre de archivo de Windows (que solo prohibe < > : " / \ | ? *)
+    # y todo esto es especial para algun interprete.
+    $serieNombre  = "rara & ^ %PATH% 'sim' ``bt`` (p) #h `$p ~t !b +m =i ,c ;p [c] {l}"
+    $promptNombre = "01-raro & 'con' ``bt`` %VAR% !b.md"
+
+    $serieDir = Join-Path $f.SeriesRoot $serieNombre
+    New-Item -ItemType Directory -Path $serieDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $serieDir $promptNombre) -Encoding UTF8 -NoNewline -Value 'x'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serieDir, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $esperado = "$serieNombre/" + [System.IO.Path]::GetFileNameWithoutExtension($promptNombre)
+    $s = Get-Sesiones $f
+    Assert-Equal $esperado (Get-ArgValue $s[0] '--rc') "el nombre de sesion de Remote Control"
+    Assert-Equal $esperado (Get-ArgValue $s[0] '--name') "el nombre visible de la sesion"
+    Assert-Equal 11 @($s[0].Args).Count "y nada se partio en el camino"
 }
 
 # --- Cierre ---------------------------------------------------------------

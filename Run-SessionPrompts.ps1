@@ -247,7 +247,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.1.1'
+$script:RunnerVersion = '1.2.0'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
@@ -607,79 +607,115 @@ if ($fullAuto) {
     $claudeArgs += @('--permission-mode', 'acceptEdits')
 }
 
-# --- Escapado de argumentos nativos: SOLO donde hace falta ----------------
-# El prompt entero viaja como UN argumento hacia 'claude', y casi todos citan algo ENTRE
-# COMILLAS. Que esas comillas lleguen intactas no es cosmetico: es lo que la sesion lee.
+# --- Como viaja el prompt hasta claude ------------------------------------
+# El prompt entero viaja como UN argumento, y casi todos citan algo entre comillas, traen JSON
+# o XML con sus escapes, y TODOS son multilinea. Que eso cruce intacto la linea de comandos de
+# Windows no es cosmetico: es lo que la sesion lee.
 #
-# Escapar segun las reglas de CommandLineToArgvW (comillas con \, y backslashes duplicados
-# cuando preceden a una comilla o cierran la cadena) hace falta cuando el llamador NO lo hace.
-# Windows PowerShell 5.1 no lo hace. PowerShell 7.3+ SI, y ahi el escapado a mano se suma
-# encima: doble escapado.
+# MEDIDO (pwsh 7.6.4, Windows 11, 2026-08-18) con 21 payloads hostiles -- comillas dobles pares
+# e impares, comillas simples, backticks, acentos agudos y comillas tipograficas, XML, HTML,
+# JSON con \" y \' y \n adentro, backslash final, metacaracteres de shell, %VARIABLES%, prompts
+# multilinea, unicode y emoji -- contra un .exe nativo que anota cada argumento tal como se lo
+# entrego el sistema operativo:
 #
-# MEDIDO (pwsh 7.6.4, Windows 11, 2026-08-18) pasando el argumento
-#     cita: "texto entre comillas", ruta C:\x
-# a un .exe nativo escrito para esto, que anota CADA argumento tal como se lo entrego el sistema
-# operativo -- o sea, ya parseado con CommandLineToArgvW, que es como lee sus argumentos claude.exe:
+#   | camino                                   | resultado                                     |
+#   |------------------------------------------|-----------------------------------------------|
+#   | .exe nativo, modo Standard/Windows       | los 21 INTACTOS                               |
+#   | .exe nativo, modo Legacy, sin escapar    | se PARTE en la primera comilla                |
+#   | .exe nativo, modo Legacy, escapando      | 20 de 21 (un '\' final llega duplicado)       |
+#   | shim .cmd/.bat, escapando o no           | ver abajo: irreparable                        |
 #
-#   | modo                          | sin escapar          | escapado a mano                |
-#   |-------------------------------|----------------------|--------------------------------|
-#   | Windows (default 7.x), a .exe | INTACTO              | DEFORMADO: cita: \"texto\"...  |
-#   | Windows (default 7.x), a .cmd | PARTIDO en 3 pedazos | INTACTO (*)                    |
-#   | Legacy, a .exe                | PARTIDO en 3 pedazos | INTACTO (*)                    |
-#   | Legacy, a .cmd                | PARTIDO en 3 pedazos | INTACTO (*)                    |
+# De ahi salen las dos decisiones de este bloque.
+
+# --- 1) El modo de pasaje de argumentos se FIJA, no se adivina -------------
+# $PSNativeCommandArgumentPassing es una variable de preferencia: la puede haber dejado en
+# 'Legacy' un perfil, o el llamador. En vez de detectar eso y compensarlo escapando a mano
+# (que es lo que hacia este script hasta la 1.1.1), lo fijamos para nuestro propio ambito.
+# MEDIDO: con el llamador en 'Legacy', fijarlo en 'Standard' aca alcanza para que el prompt
+# llegue intacto, incluso adentro de las funciones de este script.
 #
-#   "PARTIDO" es el modo de falla grave: el argumento se corta en la comilla y los pedazos de
-#   atras le llegan a claude como argumentos sueltos. No falla nada; la sesion simplemente lee
-#   otra cosa.
+# 'Standard' y no 'Windows': 'Windows' tiene una excepcion para .cmd/.bat, y no queremos que
+# el comportamiento dependa de con que se resolvio 'claude'.
 #
-#   (*) con un efecto colateral tambien medido: un '\' AL FINAL del argumento llega DUPLICADO,
-#       porque las dos capas duplican los backslashes de cierre. Se deja como esta: los prompts
-#       no terminan en backslash, y en el camino que se usa hoy (.exe, modo Windows) no se
-#       escapa nada.
-#
-# Las tres filas que le importan al script -- .exe sin escapar, .cmd escapando, Legacy escapando --
-# estan cubiertas por tests que corren el runner de verdad contra ese .exe. Ver tests/Run-Tests.ps1.
-#
-# O sea que en el caso normal de hoy -- 'claude' es claude.exe y el modo es el default -- el
-# escapado a mano no protege: CORROMPE. Por eso se conserva, pero CONDICIONADO a los dos casos
-# donde si hace falta. INFERIDO de about_Parsing: 'Legacy' no escapa nunca; 'Standard' escapa
-# siempre; 'Windows' (el default en Windows) escapa salvo para cmd.exe, .bat, .cmd y algunos
-# mas, que quedan en el comportamiento viejo. La fila del shim .cmd ademas esta medida.
+# La variable existe desde 7.3. En 7.0-7.2 no existe y el comportamiento es el viejo (como
+# 'Legacy'): ahi, y SOLO ahi, hay que escapar a mano.
+$hayVariableDeModo = $null -ne (Get-Variable -Name PSNativeCommandArgumentPassing -ErrorAction SilentlyContinue)
+
+if ($hayVariableDeModo) {
+    $PSNativeCommandArgumentPassing = 'Standard'
+    $escapar = $false
+    $motivoEscapado = "modo fijado en 'Standard' por el script; PowerShell escapa"
+} else {
+    $escapar = $true
+    $motivoEscapado = "PowerShell $($PSVersionTable.PSVersion) no tiene PSNativeCommandArgumentPassing (7.0-7.2): escapo a mano"
+}
+
+# Escapado segun las reglas de CommandLineToArgvW (comillas con \, y backslashes duplicados
+# cuando preceden a una comilla o cierran la cadena). Solo se usa en 7.0-7.2. Efecto colateral
+# medido: un '\' AL FINAL del prompt llega duplicado. Se deja asi -- un prompt no termina en
+# backslash, y en 7.3+ no se escapa nada.
 function ConvertTo-NativeArg([string]$s) {
     $s = $s -replace '(\\*)"', '$1$1\"'
     $s = $s -replace '(\\+)$', '$1$1'
     return $s
 }
 
-# Decide si este entorno necesita el escapado manual. Se evalua UNA vez, no por prompt: ni el
-# modo de pasaje de argumentos ni el PATH cambian a mitad de una serie.
-function Test-NecesitaEscapadoNativo([string]$comando) {
-    # En 7.0-7.2 la variable de preferencia todavia no existe y el comportamiento es el viejo,
-    # asi que $null se trata como 'Legacy'.
-    $modo = if ($null -ne $PSNativeCommandArgumentPassing) { [string]$PSNativeCommandArgumentPassing } else { 'Legacy' }
-
-    # 1) Modo Legacy: PowerShell no escapa nada y ademas solo entrecomilla si hay espacios.
-    #    Se puede setear por sesion o desde un perfil, asi que no alcanza con el #Requires.
-    if ($modo -eq 'Legacy') {
-        return @($true, "modo Legacy: PowerShell no escapa")
+# --- 2) Un 'claude' que sea un shim .cmd/.bat no sirve ---------------------
+# Si 'claude' se instalo por npm, en el PATH queda un claude.cmd. Pasar el prompt por ahi lo
+# rompe, y de la peor manera. MEDIDO con los mismos 21 payloads, escapando y sin escapar:
+#
+#   - un prompt MULTILINEA llega TRUNCADO en su primera linea, sin error ni aviso. Como todos
+#     los prompts de sesion son multilinea, esto solo no deja nada en pie;
+#   - %PATH% y compania los EXPANDE cmd: al prompt le entra el PATH de la maquina;
+#   - un '<' o un '>' (o sea, cualquier prompt con XML o HTML) hace fallar la invocacion;
+#   - un '\' final llega duplicado.
+#
+# No hay escapado que arregle eso: son reglas de cmd.exe, no de CommandLineToArgvW. Asi que si
+# 'claude' resuelve a un shim, primero buscamos el .exe equivalente; si no hay, el script NO
+# ARRANCA. Es la misma regla que el corte por tamano: mejor una corrida que no empieza que una
+# serie entera leyendo la primera linea de cada prompt.
+function Resolve-ComandoClaude([string]$comando) {
+    $resuelto = Get-Command $comando -ErrorAction SilentlyContinue
+    if (-not $resuelto) {
+        Write-Host "No encuentro '$comando'. Instala Claude Code, o pasa -ClaudeCommand con la ruta al ejecutable." -ForegroundColor Red
+        exit 1
     }
 
-    # 2) Modo 'Windows' con un destino .cmd/.bat: PowerShell les aplica las reglas VIEJAS
-    #    (no escapa las comillas), porque cmd.exe no entiende el escapado de
-    #    CommandLineToArgvW. Pasa, por ejemplo, si 'claude' se instalo por npm, que deja un
-    #    shim .cmd en el PATH. En modo 'Standard' no hay excepcion por extension.
-    if ($modo -eq 'Windows') {
-        $cmd = Get-Command $comando -ErrorAction SilentlyContinue
-        if ($cmd -and $cmd.CommandType -eq 'Application' -and $cmd.Source -match '\.(cmd|bat)$') {
-            return @($true, "'$comando' es un shim $([IO.Path]::GetExtension($cmd.Source))")
+    # Un .ps1, una funcion o un alias no pasan por la linea de comandos de Windows: se usan
+    # tal cual. (Es, entre otras cosas, como se testea este script.)
+    if ($resuelto.CommandType -ne 'Application') { return $comando }
+
+    if ($resuelto.Source -notmatch '\.(cmd|bat)$') { return $resuelto.Source }
+
+    # Es un shim. Alguna otra entrada del PATH con el mismo nombre que NO sea shim?
+    $alternativa = @(Get-Command $comando -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandType -eq 'Application' -and $_.Source -notmatch '\.(cmd|bat)$' } |
+        Select-Object -First 1)
+
+    # O un ejecutable al lado del shim (claude.cmd -> claude.exe en la misma carpeta)?
+    if ($alternativa.Count -eq 0) {
+        $hermano = [System.IO.Path]::ChangeExtension($resuelto.Source, '.exe')
+        if (Test-Path -LiteralPath $hermano) {
+            Write-Host "'$comando' resolvia a un shim $([IO.Path]::GetExtension($resuelto.Source)); uso el ejecutable de al lado: $hermano" -ForegroundColor DarkGray
+            return $hermano
         }
+    } else {
+        Write-Host "'$comando' resolvia a un shim $([IO.Path]::GetExtension($resuelto.Source)); uso $($alternativa[0].Source)" -ForegroundColor DarkGray
+        return $alternativa[0].Source
     }
 
-    # 3) Todo lo demas (hoy: modo 'Windows' + claude.exe): PowerShell ya escapa bien.
-    return @($false, "modo $modo y '$comando' no es un shim .cmd/.bat")
+    Write-Host "'$comando' resuelve a un shim: $($resuelto.Source)" -ForegroundColor Red
+    Write-Host "Por ese camino el prompt NO llega entero: uno multilinea se trunca en su primera linea," -ForegroundColor Red
+    Write-Host "en silencio, y un '<' o un '%VAR%' lo rompen de otras formas (medido). No arranco." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "Que hacer:" -ForegroundColor Yellow
+    Write-Host "  - instalar Claude Code como ejecutable nativo (winget install Anthropic.ClaudeCode), o" -ForegroundColor Yellow
+    Write-Host "  - apuntar el runner al ejecutable real: -ClaudeCommand <ruta al .exe>, o la clave" -ForegroundColor Yellow
+    Write-Host "    'claudeCommand' del session-prompts.config.json." -ForegroundColor Yellow
+    exit 1
 }
 
-$escapar, $motivoEscapado = Test-NecesitaEscapadoNativo $ClaudeCommand
+$ClaudeCommand = Resolve-ComandoClaude $ClaudeCommand
 
 # Numero al inicio del nombre (01-foo.md -> 1). Sirve para ordenar y filtrar.
 function Get-PromptNumber($name) { [int]($name -replace '^(\d+).*$', '$1') }
@@ -973,8 +1009,8 @@ foreach ($item in $plan) {
     # checkout donde viven los prompts ($p.FullName es absoluto); el cwd puede ser otro.
     $promptText = Get-Content -LiteralPath $p.FullName -Raw -Encoding UTF8
 
-    # Ver el bloque "Escapado de argumentos nativos": en el camino normal (claude.exe, modo
-    # 'Windows') PowerShell ya escapa solo y meter escapado encima degrada el prompt.
+    # Ver el bloque "Como viaja el prompt hasta claude": en 7.3+ el modo esta fijado en
+    # 'Standard' y PowerShell escapa solo, asi que meter escapado encima degradaria el prompt.
     $arg = if ($escapar) { ConvertTo-NativeArg $promptText } else { $promptText }
 
     if ($arg.Length -gt $maxPromptChars) {

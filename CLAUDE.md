@@ -41,15 +41,19 @@ Dos objetivos, y todo cambio se juzga contra ellos:
 
 ## 3. Decisiones ya tomadas — no re-litigar
 
-- **El escapado manual de comillas está condicionado, no siempre.** Bajo `pwsh` con un `claude.exe`
-  nativo, PowerShell ya escapa y sumar escapado encima **corrompe** cada `"` del prompt. Medido tres
-  veces: dos independientes en los repos de origen (ChatNet y AtlasVDT), y una acá contra un `.exe`
-  nativo hecho para la prueba. El script decide una vez al arrancar e **imprime el motivo**. Si
-  aparece evidencia nueva que lo contradiga, frená y reportá.
-- **Las tres ramas de esa decisión tienen test, y los tests están verificados por mutación**
-  (forzar «escapar siempre» y «no escapar nunca» pone en rojo los casos que corresponden). Si tocás
-  `Test-NecesitaEscapadoNativo` o `ConvertTo-NativeArg`, corré la suite: es lo único que separa este
-  script de degradar prompts en silencio.
+- **El modo de pasaje de argumentos se fija (`Standard`), no se adivina.** Bajo `pwsh` con un
+  `claude.exe` nativo, PowerShell escapa solo y sumar escapado a mano **corrompe** cada `"` del
+  prompt. Medido cuatro veces: dos independientes en los repos de origen (ChatNet y AtlasVDT), y dos
+  acá contra un `.exe` nativo hecho para la prueba, la segunda con 21 payloads hostiles. El escapado
+  manual quedó **sólo** para PowerShell 7.0–7.2, donde `$PSNativeCommandArgumentPassing` no existe.
+- **Un `claude` que resuelve a un shim `.cmd`/`.bat` no sirve, y el runner no arranca.** Medido: por
+  ese camino un prompt multilínea llega truncado en su primera línea, en silencio. El runner primero
+  busca el `.exe` equivalente; si no hay, corta. No lo «arregles» agregando escapado: son reglas de
+  `cmd.exe`, no de `CommandLineToArgvW`.
+- **Todo esto tiene test contra un `.exe` nativo, y los tests están verificados por mutación** (no
+  fijar el modo, aceptar el shim, escapar siempre y no escapar nunca ponen en rojo los casos que
+  corresponden). Si tocás `Resolve-ComandoClaude`, `ConvertTo-NativeArg` o el bloque que fija el
+  modo, corré la suite: es lo único que separa este script de degradar prompts en silencio.
 - **`-Worktree` es opcional y viene apagado.** Buspack lo hacía siempre; la mayoría de los repos no
   lo necesita.
 - **Las carpetas que empiezan con `_` no son series**, aunque tengan prompts numerados adentro. Es lo
