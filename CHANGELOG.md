@@ -6,6 +6,24 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.6.0] — 2026-08-18
+
+### Cambiado
+
+- **Una línea mal escrita en `series-estado.txt` ahora corta con un error**, diciendo en qué línea
+  está y cuál es, en vez de ignorarse. Era el último lugar del script que degradaba en silencio: una
+  serie mal anotada aparece como pendiente estando terminada —o al revés— y eso no se nota mirando
+  el menú. Es el mismo criterio que ya tenían las marcas `modelo-sugerido` y `effort-sugerido`.
+- Con eso, **un nombre de serie con espacios se detecta** en vez de leerse truncado:
+  `terminada - mi serie` se tomaba como la serie `mi`, y nadie se enteraba.
+- La validación corre al arrancar, no al abrir el menú: con `-PromptsPath` el menú no se abre, pero
+  el archivo igual se reescribe al cerrar la serie.
+
+### Nota
+
+- El formato no cambió. Los `series-estado.txt` que ya existen —Agentada (2 series) y ChatNet (56)—
+  se leen sin una sola queja: verificado pasando los dos archivos reales por el runner nuevo.
+
 ## [1.5.0] — 2026-08-18
 
 ### Cambiado
@@ -267,6 +285,7 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.5.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.6.0
 [1.5.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.5.0
 [1.4.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.4.1

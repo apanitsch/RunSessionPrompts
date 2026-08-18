@@ -1386,6 +1386,47 @@ Test-Case "con el producto al lado NO baja nada: instala desde la carpeta" {
     Assert-NotMatch 'Bajando el release' $r.Salida "asi que no tiene que bajar nada"
 }
 
+Test-Case "una linea mal escrita en series-estado.txt corta, y dice cual" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-estado-malo' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'series-estado.txt') -Encoding UTF8 -Value @(
+        '# el encabezado de siempre',
+        '',
+        'pendiente 1 serie-estado-malo',
+        'terminadas - se-escribio-mal',
+        'pendiente 2 otra con espacios'
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "tiene que cortar"
+    Assert-Match 'linea 4' $r.Salida "diciendo en que linea esta el error"
+    Assert-Match 'terminadas - se-escribio-mal' $r.Salida "y cual es"
+    Assert-Match 'linea 5' $r.Salida "y la otra tambien: un nombre con espacios se leeria truncado"
+    Assert-Match 'El formato de una linea es' $r.Salida "y con el formato correcto"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "el formato que ya usan los repos existentes se lee sin quejas" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-vigente' @{ '01-uno.md' = 'x' }
+    New-Serie $f 'serie-cerrada' @{ '01-uno.md' = 'x' } | Out-Null
+    New-Serie $f 'serie-cerrada-sin-fecha' @{ '01-uno.md' = 'x' } | Out-Null
+
+    # Las tres formas que aparecen en los series-estado.txt reales de Agentada y ChatNet.
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'series-estado.txt') -Encoding UTF8 -Value @(
+        '# comentario, y una linea vacia abajo',
+        '',
+        'pendiente 1 serie-vigente',
+        'terminada - serie-cerrada   # cerrada 2026-08-18',
+        'terminada - serie-cerrada-sin-fecha'
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'No entiendo estas lineas' $r.Salida "el formato de siempre no puede molestar"
+    Assert-Equal 1 (Get-Sesiones $f).Count "y la serie corre"
+}
+
 # --- Cierre ---------------------------------------------------------------
 
 Write-Host ""

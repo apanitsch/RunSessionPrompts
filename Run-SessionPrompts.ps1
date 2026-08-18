@@ -281,7 +281,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.5.0'
+$script:RunnerVersion = '1.6.0'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
@@ -549,6 +549,7 @@ if ($null -ne $cfgMax -and [int]$cfgMax -gt 0) { $maxPromptChars = [int]$cfgMax 
 
 function Get-PromptSeries { Get-SeriesEnRaiz $SeriesRoot }
 
+
 # --- Chequeo de version, y la oferta --------------------------------------
 # Aca arriba de todo, antes de cualquier menu: si hay algo que decidir, se decide antes de
 # lanzar la primera sesion. Y si no hay conexion, no pasa nada: la corrida sigue.
@@ -629,6 +630,39 @@ if (Test-TocaChequear) {
 # funciona igual (muestra todas, alfabetico). Ver el encabezado del .txt para el formato.
 $estadoPath = Join-Path $SeriesRoot 'series-estado.txt'
 
+# Una linea de datos: <estado> <orden> <serie>, y despues nada o un comentario. El nombre de la
+# serie no puede tener espacios (es un nombre de carpeta en kebab-case) y por eso se exige que la
+# linea termine ahi: 'terminada - mi serie' se leeria como la serie 'mi', y nadie se enteraria.
+$script:LineaDeEstado = '^(pendiente|terminada)\s+(\S+)\s+(\S+)\s*(#.*)?$'
+
+# Las lineas que no se entienden CORTAN, no se ignoran. Una serie mal escrita aparece como
+# pendiente cuando esta terminada, o al reves, y eso no se nota mirando el menu -- es la misma
+# clase de degradacion silenciosa que el script no se permite en ningun otro lado.
+function Assert-SeriesEstadoValido {
+    if (-not (Test-Path -LiteralPath $estadoPath)) { return }
+
+    $malas = @()
+    $n = 0
+    foreach ($linea in (Get-Content -LiteralPath $estadoPath -Encoding UTF8)) {
+        $n++
+        $t = $linea.Trim()
+        if ($t -eq '' -or $t.StartsWith('#')) { continue }
+        if ($t -notmatch $script:LineaDeEstado) { $malas += [pscustomobject]@{ Numero = $n; Texto = $t } }
+    }
+
+    if ($malas.Count -eq 0) { return }
+
+    Write-Host "No entiendo estas lineas de $estadoPath :" -ForegroundColor Red
+    foreach ($m in $malas) { Write-Host ("  linea {0}: [{1}]" -f $m.Numero, $m.Texto) -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "El formato de una linea es:" -ForegroundColor Yellow
+    Write-Host "  <pendiente|terminada> <orden|-> <serie>        # comentario opcional" -ForegroundColor DarkGray
+    Write-Host "El nombre de la serie es el de la carpeta, sin espacios. Las lineas vacias y las que" -ForegroundColor DarkGray
+    Write-Host "empiezan con # se ignoran. Borrar el archivo tambien es valido: el menu vuelve a" -ForegroundColor DarkGray
+    Write-Host "mostrar todas las series, en orden alfabetico." -ForegroundColor DarkGray
+    exit 1
+}
+
 function Get-SeriesEstado {
     $mapa = @{}
     if (-not (Test-Path -LiteralPath $estadoPath)) { return $mapa }
@@ -637,9 +671,8 @@ function Get-SeriesEstado {
         $t = $linea.Trim()
         if ($t -eq '' -or $t.StartsWith('#')) { continue }
 
-        # <estado> <orden> <serie>  -- la fecha que el script agrega al cerrar queda al final
-        # y se ignora.
-        $m = [regex]::Match($t, '^(pendiente|terminada)\s+(\S+)\s+(\S+)')
+        # Lo malformado ya corto en Assert-SeriesEstadoValido, arriba de todo.
+        $m = [regex]::Match($t, $script:LineaDeEstado)
         if (-not $m.Success) { continue }
 
         $orden = 9999
@@ -676,6 +709,10 @@ function Set-SerieTerminada([string]$nombre) {
     Set-Content -LiteralPath $estadoPath -Value $lineas -Encoding UTF8
     Write-Host "series-estado.txt: '$nombre' marcada terminada." -ForegroundColor DarkGray
 }
+
+# Si el archivo de estado esta mal escrito, se dice ahora y se corta. Va aca y no adentro del
+# menu porque con -PromptsPath el menu no se abre, y el archivo igual se reescribe al cerrar.
+Assert-SeriesEstadoValido
 
 # --- Helpers de paths ------------------------------------------------------
 # Windows: comparacion case-insensitive y sin barra final. git imprime rutas con '/';
