@@ -87,7 +87,19 @@ CHANGELOG.md                  qué cambió en cada versión
 que un agente lee para saber cómo escribir y correr una serie, y el segundo es lo que hace que el
 andamiaje sea descubrible. Si cambiás una regla del runner, revisá si alguno de los dos la afirma.
 
-## 5. Dónde está instalado
+## 5. Cómo se distribuye
+
+El producto se instala y se actualiza **desde el release de GitHub** (`apanitsch/RunSessionPrompts`),
+no desde una carpeta local: `Install-SessionPrompts.ps1 -FromRelease latest` para instalar, y
+`Run-SessionPrompts.ps1 -Update` desde el repo donde ya está. El runner además chequea una vez por
+día si hay una versión nueva y la ofrece — **nunca actualiza solo**, y si no hay conexión la corrida
+sigue igual.
+
+Eso implica que **una versión no existe hasta que el release está publicado**: el paso 5 del
+procedimiento del [README](README.md#versionado-y-releases) no es opcional. Se usa el `.zip` del
+código del tag, que GitHub arma solo; no hay que subir ningún archivo.
+
+## 6. Dónde está instalado
 
 Los ocho repos de origen (Agentada, AtlasVDT, Buspack, Chat, Chat-usuarios-meta, ChatNet,
 ncore-wingo, SRT.Kairos) todavía tienen **su copia vieja, sin marca de versión**. El instalador se

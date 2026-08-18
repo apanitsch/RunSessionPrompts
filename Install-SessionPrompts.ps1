@@ -26,6 +26,15 @@
     session-prompts.config.json, y un README.md propio del repo que no haya puesto este
     instalador. Ahi vive el trabajo del repo destino.
 
+.PARAMETER FromRelease
+    En vez de instalar desde esta carpeta, baja el ultimo release publicado en GitHub (o el tag
+    que se le pase) y instala desde ahi. Sirve para instalar o actualizar sin tener un clon del
+    producto: alcanza con este archivo.
+
+.PARAMETER ReleaseZip
+    Instala desde un .zip del release ya bajado, sin tocar la red. Es lo que usa -FromRelease por
+    debajo, y sirve para una maquina sin salida a internet.
+
 .PARAMETER Repo
     Raiz del repo destino. Default: el directorio actual.
 
@@ -65,6 +74,8 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
+    [string]$FromRelease,
+    [string]$ReleaseZip,
     [string]$Repo,
     [string]$SeriesRoot,
     [switch]$Force,
@@ -81,6 +92,112 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# El producto vive aca. La misma constante esta en el runner, para su chequeo de version.
+$script:RepoGitHub = 'apanitsch/RunSessionPrompts'
+
+# --- Instalar desde un release en vez de desde esta carpeta ----------------
+# La idea es que ESTE archivo solo alcance: lo bajas suelto, lo corres con -FromRelease, y el se
+# encarga de traer el resto. Lo que hace es bajar el .zip del tag, descomprimirlo, y REEJECUTAR
+# el instalador que viene adentro -- no el de aca. Asi la instalacion la hace siempre la version
+# que se esta instalando, y este archivo puede quedar viejo sin que importe.
+if ($FromRelease -or $ReleaseZip) {
+    $zip = $ReleaseZip
+
+    # Mismo override que el runner: un zip ya bajado, para una maquina sin salida a internet
+    # (y para poder probar todo esto sin red).
+    if (-not $zip -and -not [string]::IsNullOrWhiteSpace($env:SESSION_PROMPTS_RELEASE_ZIP)) {
+        $zip = $env:SESSION_PROMPTS_RELEASE_ZIP
+    }
+
+    if (-not $zip) {
+        $tag = if ($FromRelease -eq 'latest') { $null } else { [string]$FromRelease }
+
+        if (-not $tag) {
+            # Override para probar, o para apuntar a un mirror interno. URL o ruta a un JSON.
+            $fuente = $env:SESSION_PROMPTS_RELEASES_URL
+            if ([string]::IsNullOrWhiteSpace($fuente)) { $fuente = "https://api.github.com/repos/$script:RepoGitHub/releases/latest" }
+
+            try {
+                if ($fuente -notmatch '^https?://') {
+                    $json = Get-Content -LiteralPath $fuente -Raw -Encoding UTF8 | ConvertFrom-Json
+                } else {
+                    $json = Invoke-RestMethod -Uri $fuente -TimeoutSec 10 -Headers @{ 'User-Agent' = 'Install-SessionPrompts' }
+                }
+                $tag = [string]$json.tag_name
+            } catch { }
+
+            # Mientras el repo sea privado, la API anonima contesta 404; 'gh' usa la credencial
+            # del usuario y sirve para las dos etapas.
+            if (-not $tag) {
+                $gh = Get-Command gh -ErrorAction SilentlyContinue
+                if ($gh) {
+                    $salida = & $gh.Source api "repos/$script:RepoGitHub/releases/latest" 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $salida) {
+                        try { $tag = [string]((($salida | ForEach-Object { "$_" }) -join '') | ConvertFrom-Json).tag_name } catch { }
+                    }
+                }
+            }
+
+            if (-not $tag) {
+                Write-Host "No pude averiguar cual es el ultimo release de $script:RepoGitHub." -ForegroundColor Red
+                Write-Host "Pasale el tag: -FromRelease v1.2.3   |   o el zip: -ReleaseZip <ruta>" -ForegroundColor DarkGray
+                exit 1
+            }
+        }
+
+        Write-Host "Bajando el release $tag de $script:RepoGitHub..." -ForegroundColor Cyan
+        $zip = Join-Path ([System.IO.Path]::GetTempPath()) "run-session-prompts-$tag.zip"
+        $bajado = $false
+        try {
+            Invoke-WebRequest -Uri "https://github.com/$script:RepoGitHub/archive/refs/tags/$tag.zip" -OutFile $zip -TimeoutSec 120 -Headers @{ 'User-Agent' = 'Install-SessionPrompts' }
+            $bajado = Test-Path -LiteralPath $zip
+        } catch { }
+
+        if (-not $bajado) {
+            $gh = Get-Command gh -ErrorAction SilentlyContinue
+            if ($gh) {
+                & $gh.Source release download $tag --repo $script:RepoGitHub --archive=zip --output $zip --clobber 2>$null | Out-Null
+                $bajado = ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $zip))
+            }
+        }
+
+        if (-not $bajado) {
+            Write-Host "No pude bajar el release $tag." -ForegroundColor Red
+            Write-Host "Mira https://github.com/$script:RepoGitHub/releases" -ForegroundColor DarkGray
+            exit 1
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $zip)) {
+        Write-Host "No existe el zip: $zip" -ForegroundColor Red
+        exit 1
+    }
+
+    $carpeta = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-release-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    Expand-Archive -LiteralPath $zip -DestinationPath $carpeta -Force
+
+    $inst = @(Get-ChildItem -LiteralPath $carpeta -Filter 'Install-SessionPrompts.ps1' -Recurse -Depth 2 | Select-Object -First 1)
+    if ($inst.Count -eq 0) {
+        Write-Host "El zip no trae Install-SessionPrompts.ps1: $zip" -ForegroundColor Red
+        exit 1
+    }
+
+    # Se reejecuta el instalador del release con los mismos argumentos MENOS los que trajeron
+    # hasta aca (si no, se llamaria a si mismo para siempre).
+    $paraPasar = @()
+    foreach ($clave in $PSBoundParameters.Keys) {
+        if ($clave -in @('FromRelease', 'ReleaseZip')) { continue }
+        $valor = $PSBoundParameters[$clave]
+        if ($valor -is [switch]) { if ($valor.IsPresent) { $paraPasar += "-$clave" } }
+        else { $paraPasar += @("-$clave", [string]$valor) }
+    }
+
+    Write-Host "Instalando desde $($inst[0].DirectoryName)" -ForegroundColor DarkGray
+    Write-Host ""
+    & pwsh -NoProfile -File $inst[0].FullName @paraPasar
+    exit $LASTEXITCODE
+}
 
 $origen = $PSScriptRoot
 $runnerOrigen = Join-Path $origen 'Run-SessionPrompts.ps1'

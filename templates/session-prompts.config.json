@@ -22,6 +22,9 @@
   "_worktreeRoot": "Donde se crean los worktrees. Default '<repo>\\..\\worktrees'.",
   "worktreeRoot": null,
 
+  "_checkForUpdates": "true (default) = al arrancar, una vez por dia, chequea si hay una version nueva publicada en GitHub y la ofrece. false = no chequea nunca. El chequeo tiene cinco segundos de paciencia y, si falla, la corrida sigue igual.",
+  "checkForUpdates": true,
+
   "_claudeCommand": "Ejecutable de Claude Code. Default 'claude'.",
   "claudeCommand": "claude",
 

@@ -153,6 +153,24 @@
 .PARAMETER Version
     Imprime la version del runner y termina.
 
+.PARAMETER Update
+    Se actualiza a la ultima version publicada en GitHub y termina. Baja el release, y lo instala
+    con el instalador que viene adentro (o sea que tambien actualiza las plantillas y el README).
+
+.PARAMETER SkipUpdateCheck
+    No chequea si hay una version nueva al arrancar. Ese chequeo se hace una vez por dia, contra
+    la API de GitHub, con cinco segundos de paciencia; si no hay conexion, la corrida sigue igual.
+    Tambien se apaga para siempre con "checkForUpdates": false en session-prompts.config.json.
+
+.PARAMETER SkipClaudeMd
+    Al actualizar (-Update, o aceptando la oferta), no corre la sesion de Claude Code que pone al
+    dia el CLAUDE.md del repo. Solo aplica a la actualizacion.
+
+.PARAMETER Force
+    Solo con -Update: pisa el runner instalado aunque el instalador no lo reconozca como suyo
+    (porque esta modificado a mano, o porque es una copia vieja sin marca de version). Antes de
+    pisarlo deja una copia .bak al lado.
+
 .EXAMPLE
     # Sin parametros: menu de series pendientes, numero de inicio, modelo y effort.
     pwsh -File .\Run-SessionPrompts.ps1
@@ -179,6 +197,10 @@
 .EXAMPLE
     # Tab completa el nombre de la serie que exista bajo la raiz de series.
     .\Run-SessionPrompts.ps1 -PromptsPath <Tab>
+
+.EXAMPLE
+    # Actualizar a la ultima version publicada.
+    pwsh -File .\Run-SessionPrompts.ps1 -Update
 
 .NOTES
     Version, changelog y procedimiento de release: ver CHANGELOG.md del repo RunSessionPrompts.
@@ -242,16 +264,166 @@ param(
 
     [switch]$DryRun,
 
-    [switch]$Version
+    [switch]$Version,
+
+    [switch]$Update,
+
+    [switch]$SkipUpdateCheck,
+
+    # Se le pasa al instalador cuando se actualiza: asi no corre la sesion que pone al dia el
+    # CLAUDE.md del repo.
+    [switch]$SkipClaudeMd,
+
+    # Solo con -Update: pisa el runner instalado aunque el instalador no lo reconozca como suyo
+    # (modificado a mano, o una copia vieja sin marca de version). Deja un .bak al lado.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.3.0'
+$script:RunnerVersion = '1.4.0'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
     exit 0
+}
+
+# --- De donde sale una version nueva --------------------------------------
+# El producto vive en un repo de GitHub y se publica por releases. El runner no se actualiza
+# solo: chequea (una vez por dia, sin bloquear nada) y OFRECE. Bajar e instalar es siempre a
+# pedido, y lo hace el instalador que viene adentro del release, no este script.
+$script:RepoGitHub = 'apanitsch/RunSessionPrompts'
+
+# El ultimo chequeo se anota en el perfil de la MAQUINA, no en el repo: la carpeta de series
+# esta commiteada en el repo destino, y un archivo de cache apareceria ahi como un cambio sin
+# explicacion.
+# ($env:LOCALAPPDATA primero: GetFolderPath NO la mira -- va a la API de Windows -- y entonces
+# no habria forma de correr esto contra un perfil de prueba.)
+$script:CarpetaDeEstado = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $env:LOCALAPPDATA
+} else {
+    [Environment]::GetFolderPath('LocalApplicationData')
+}
+$script:CacheChequeo = Join-Path $script:CarpetaDeEstado 'RunSessionPrompts\ultimo-chequeo.txt'
+
+function Get-VersionDeTag([string]$tag) {
+    if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
+    try { return [version]($tag -replace '^v', '') } catch { return $null }
+}
+
+# El tag del ultimo release, o $null si no se pudo averiguar. NUNCA tira ni corta la corrida:
+# no poder chequear no es un error, es no saber.
+function Get-UltimoReleasePublicado {
+    # Override para probar, o para una maquina que llega al producto por otro lado (un mirror
+    # interno, un archivo copiado a mano). Acepta una URL o la ruta a un JSON.
+    $fuente = $env:SESSION_PROMPTS_RELEASES_URL
+    if ([string]::IsNullOrWhiteSpace($fuente)) {
+        $fuente = "https://api.github.com/repos/$script:RepoGitHub/releases/latest"
+    }
+
+    try {
+        if ($fuente -notmatch '^https?://') {
+            if (-not (Test-Path -LiteralPath $fuente)) { return $null }
+            $json = Get-Content -LiteralPath $fuente -Raw -Encoding UTF8 | ConvertFrom-Json
+        } else {
+            $json = Invoke-RestMethod -Uri $fuente -TimeoutSec 5 -Headers @{ 'User-Agent' = 'Run-SessionPrompts' }
+        }
+        if ($json.tag_name) { return [string]$json.tag_name }
+    } catch { }
+
+    # Mientras el repo sea privado, la API anonima contesta 404. 'gh' usa la credencial del
+    # usuario y sirve para las dos etapas.
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if ($gh -and $fuente -match '^https?://api\.github\.com') {
+        try {
+            $salida = & $gh.Source api "repos/$script:RepoGitHub/releases/latest" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $salida) {
+                $json = (($salida | ForEach-Object { "$_" }) -join '') | ConvertFrom-Json
+                if ($json.tag_name) { return [string]$json.tag_name }
+            }
+        } catch { }
+    }
+
+    return $null
+}
+
+# Baja el .zip del release y devuelve su ruta, o $null.
+function Get-ZipDelRelease([string]$tag) {
+    if (-not [string]::IsNullOrWhiteSpace($env:SESSION_PROMPTS_RELEASE_ZIP)) {
+        if (Test-Path -LiteralPath $env:SESSION_PROMPTS_RELEASE_ZIP) { return $env:SESSION_PROMPTS_RELEASE_ZIP }
+        Write-Host "SESSION_PROMPTS_RELEASE_ZIP apunta a algo que no existe: $env:SESSION_PROMPTS_RELEASE_ZIP" -ForegroundColor Red
+        return $null
+    }
+
+    $destino = Join-Path ([System.IO.Path]::GetTempPath()) ("run-session-prompts-$tag.zip")
+
+    try {
+        Invoke-WebRequest -Uri "https://github.com/$script:RepoGitHub/archive/refs/tags/$tag.zip" `
+                          -OutFile $destino -TimeoutSec 120 -Headers @{ 'User-Agent' = 'Run-SessionPrompts' }
+        if (Test-Path -LiteralPath $destino) { return $destino }
+    } catch { }
+
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if ($gh) {
+        & $gh.Source release download $tag --repo $script:RepoGitHub --archive=zip --output $destino --clobber 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $destino)) { return $destino }
+    }
+
+    return $null
+}
+
+# Baja el release y lo instala en ESTE repo con el instalador que viene adentro. El trabajo real
+# lo hace ese instalador: asi la logica de instalacion vive en un solo lado, y una version nueva
+# puede cambiarla sin depender de lo que sepa hacer el runner viejo.
+function Invoke-Actualizacion([string]$tag) {
+    Write-Host "Bajando $tag..." -ForegroundColor Cyan
+    $zip = Get-ZipDelRelease $tag
+    if (-not $zip) {
+        Write-Host "No pude bajar el release $tag." -ForegroundColor Red
+        Write-Host "Probalo a mano: https://github.com/$script:RepoGitHub/releases" -ForegroundColor DarkGray
+        return $false
+    }
+
+    $carpeta = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-release-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        Expand-Archive -LiteralPath $zip -DestinationPath $carpeta -Force
+    } catch {
+        Write-Host "No pude descomprimir $zip : $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+
+    $inst = @(Get-ChildItem -LiteralPath $carpeta -Filter 'Install-SessionPrompts.ps1' -Recurse -Depth 2 |
+              Select-Object -First 1)
+    if ($inst.Count -eq 0) {
+        Write-Host "El release no trae Install-SessionPrompts.ps1." -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host "Instalando con $($inst[0].FullName)" -ForegroundColor DarkGray
+    $argsInstalador = @('-NoProfile', '-File', $inst[0].FullName, '-Repo', $SeriesRoot, '-SeriesRoot', $SeriesRoot)
+    if ($SkipClaudeMd) { $argsInstalador += '-SkipClaudeMd' }
+    if ($Force)        { $argsInstalador += '-Force' }
+
+    # | Out-Host, y no a secas: la salida de un comando nativo adentro de una funcion se va al
+    # stream de SALIDA, o sea que terminaria siendo el valor de retorno. Un array no vacio es
+    # verdadero, y un fallo del instalador se leeria como exito.
+    & pwsh @argsInstalador | Out-Host
+    $code = $LASTEXITCODE
+
+    if ($code -eq 2) {
+        # El instalador se niega a pisar un runner que no puso el (modificado a mano, o una copia
+        # vieja sin marca de version). Es el caso de todos los repos que todavia tienen la copia
+        # que se copiaba y pegaba.
+        Write-Host ""
+        Write-Host "No actualice nada. Si ya miraste el diff y queres pisarlo igual:" -ForegroundColor Yellow
+        Write-Host "  pwsh -File `"$PSCommandPath`" -Update -Force" -ForegroundColor DarkGray
+        return $false
+    }
+    if ($code -ne 0) {
+        Write-Host "El instalador salio con codigo $code." -ForegroundColor Yellow
+        return $false
+    }
+    return $true
 }
 
 # --- Configuracion opcional (session-prompts.config.json) ------------------
@@ -376,6 +548,81 @@ $cfgMax = Get-ConfigValue 'maxPromptChars'
 if ($null -ne $cfgMax -and [int]$cfgMax -gt 0) { $maxPromptChars = [int]$cfgMax }
 
 function Get-PromptSeries { Get-SeriesEnRaiz $SeriesRoot }
+
+# --- Chequeo de version, y la oferta --------------------------------------
+# Aca arriba de todo, antes de cualquier menu: si hay algo que decidir, se decide antes de
+# lanzar la primera sesion. Y si no hay conexion, no pasa nada: la corrida sigue.
+if ($Update) {
+    $tag = Get-UltimoReleasePublicado
+    if (-not $tag) {
+        Write-Host "No pude averiguar cual es la ultima version publicada." -ForegroundColor Red
+        Write-Host "Mira https://github.com/$script:RepoGitHub/releases" -ForegroundColor DarkGray
+        exit 1
+    }
+
+    $nueva = Get-VersionDeTag $tag
+    $actual = Get-VersionDeTag $script:RunnerVersion
+    if ($nueva -and $actual -and $nueva -le $actual) {
+        Write-Host "Ya estas en la ultima version publicada ($script:RunnerVersion)." -ForegroundColor Green
+        exit 0
+    }
+
+    if (Invoke-Actualizacion $tag) {
+        Write-Host ""
+        Write-Host "Actualizado a $tag. Volve a correr el script." -ForegroundColor Green
+        exit 0
+    }
+    exit 1
+}
+
+function Test-TocaChequear {
+    if ($SkipUpdateCheck) { return $false }
+
+    $cfg = Get-ConfigValue 'checkForUpdates'
+    if ($null -ne $cfg -and -not [bool]$cfg) { return $false }
+
+    # Una vez por dia alcanza: esto no es un canal de seguridad, es un aviso de cortesia.
+    if (Test-Path -LiteralPath $script:CacheChequeo) {
+        $ultimo = (Get-Content -LiteralPath $script:CacheChequeo -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($ultimo -eq (Get-Date).ToString('yyyy-MM-dd')) { return $false }
+    }
+    return $true
+}
+
+if (Test-TocaChequear) {
+    # Se anota ANTES de preguntar: si la red esta caida o tarda, no queremos pagar la espera en
+    # cada corrida del dia.
+    try {
+        $dir = Split-Path -Parent $script:CacheChequeo
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Set-Content -LiteralPath $script:CacheChequeo -Value (Get-Date).ToString('yyyy-MM-dd') -Encoding UTF8
+    } catch { }
+
+    $tag = Get-UltimoReleasePublicado
+    $nueva = Get-VersionDeTag $tag
+    $actual = Get-VersionDeTag $script:RunnerVersion
+
+    if ($nueva -and $actual -and $nueva -gt $actual) {
+        Write-Host ""
+        Write-Host "Hay una version nueva de Run-SessionPrompts: $tag (tenes la $script:RunnerVersion)." -ForegroundColor Yellow
+        Write-Host "  https://github.com/$script:RepoGitHub/blob/main/CHANGELOG.md" -ForegroundColor DarkGray
+        Write-Host "  [1] Actualizar ahora. Instala el release en este repo y termina, para que arranques limpio  (default)"
+        Write-Host "  [2] Seguir con la $script:RunnerVersion"
+
+        $ans = Read-Host "Elegi el numero (Enter = 1)"
+        if ([string]::IsNullOrWhiteSpace($ans) -or $ans -eq '1') {
+            if (Invoke-Actualizacion $tag) {
+                Write-Host ""
+                Write-Host "Actualizado a $tag. Volve a correr el script." -ForegroundColor Green
+                exit 0
+            }
+            Write-Host "Sigo con la $script:RunnerVersion." -ForegroundColor Yellow
+        } elseif ($ans -ne '2') {
+            Write-Host "Valor invalido: '$ans'. Tiene que ser 1 o 2." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
 
 # --- El estado de las series (series-estado.txt) ---------------------------
 # Archivo propio de ESTE script: nada mas del sistema lo lee, y si no existe el script

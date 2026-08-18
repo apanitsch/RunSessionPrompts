@@ -6,6 +6,37 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.4.0] — 2026-08-18
+
+Hasta acá, instalar y actualizar necesitaba tener el clon del producto en la máquina. Ahora no.
+
+### Agregado
+
+- **`Install-SessionPrompts.ps1 -FromRelease [tag]`**: baja el release publicado en GitHub (el
+  último, o el tag que se le pase), lo descomprime y **se re-ejecuta desde adentro** — la
+  instalación la hace siempre la versión que se está instalando, así que el archivo que bajaste
+  puede quedar viejo sin que importe. Alcanza con ese archivo suelto: no hace falta clonar nada.
+  Con `-ReleaseZip <ruta>` instala desde un `.zip` ya bajado, sin tocar la red.
+- **`Run-SessionPrompts.ps1 -Update`**: desde el repo donde ya está instalado, baja el release y lo
+  instala con el instalador que viene adentro. Con `-SkipClaudeMd` no corre la sesión que pone al
+  día el `CLAUDE.md`; con `-Force` pisa un runner que el instalador no reconozca como suyo.
+- **Chequeo de versión al arrancar**: una vez por día, antes de cualquier menú, el runner mira si
+  hay una versión nueva publicada y la **ofrece**. Nunca actualiza solo. El chequeo tiene cinco
+  segundos de paciencia, se anota en el perfil de la máquina (no en el repo, que está commiteado),
+  y si falla —sin conexión, sin releases todavía— la corrida sigue igual. Se apaga con
+  `-SkipUpdateCheck` o con `"checkForUpdates": false`.
+- Mientras el repo del producto sea privado, la API anónima de GitHub contesta 404 y tanto el
+  runner como el instalador caen a `gh`, que usa la credencial del usuario. Cuando sea público,
+  funciona sin `gh`.
+
+### Nota
+
+- Un bug que encontró el test de la actualización: la salida del instalador se colaba en el **valor
+  de retorno** de la función que lo invoca (en PowerShell, lo que un comando nativo escribe adentro
+  de una función va al stream de salida), y un array no vacío es verdadero — así que un instalador
+  que se negaba a pisar el runner se reportaba como «Actualizado». Ahora esa salida va a la consola
+  con `Out-Host` y el resultado se lee del exit code. Verificado por mutación.
+
 ## [1.3.0] — 2026-08-18
 
 Instalar los archivos no alcanzaba: si el `CLAUDE.md` del repo no nombra el andamiaje, ningún agente
@@ -198,7 +229,8 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.3.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...v1.2.0

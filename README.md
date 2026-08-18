@@ -45,7 +45,18 @@ promesa que el script no puede romper: contestás una vez y te vas.
 
 ## Instalación
 
-Una vez, en el repo donde quieras usarlo:
+Desde el release publicado en GitHub, sin clonar nada. Alcanza con bajar el instalador:
+
+```bash
+irm https://raw.githubusercontent.com/apanitsch/RunSessionPrompts/main/Install-SessionPrompts.ps1 -OutFile $env:TEMP\Install-SessionPrompts.ps1; pwsh -File $env:TEMP\Install-SessionPrompts.ps1 -FromRelease latest -Repo C:\ruta\a\MiRepo
+```
+
+Ese instalador baja el `.zip` del último release, lo descomprime, y **se re-ejecuta desde adentro**:
+la instalación la hace siempre la versión que se está instalando, así que el archivo que bajaste
+puede quedar viejo sin que importe. Con `-FromRelease v1.2.3` se instala un tag concreto, y con
+`-ReleaseZip <ruta>` desde un `.zip` ya bajado (una máquina sin salida a internet).
+
+O, si tenés el clon del producto a mano:
 
 ```bash
 pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo
@@ -74,13 +85,27 @@ El prompt de esa sesión es [`templates/prompt-instalacion-claude-md.md`](templa
 y se puede editar. Con `-SkipClaudeMd` no se lanza; con `-Model` y `-Effort` se elige con qué corre
 (por defecto `opus` y `high`).
 
-Para **actualizar**, el mismo comando. El instalador no pisa nada que no haya puesto él:
+### Actualizar
+
+Desde el repo donde ya está instalado, sin acordarse de dónde vive el producto:
+
+```bash
+pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1 -Update
+```
+
+Y no hace falta acordarse ni de eso: **al arrancar, una vez por día, el runner chequea si hay una
+versión nueva** y la ofrece antes de cualquier menú. Si no hay conexión, o si todavía no hay
+releases, la corrida sigue igual — el chequeo tiene cinco segundos de paciencia y nunca corta nada.
+Se apaga con `-SkipUpdateCheck`, o para siempre con `"checkForUpdates": false` en la configuración
+del repo.
+
+El instalador no pisa nada que no haya puesto él:
 
 | Situación en el destino | Qué hace |
 | --- | --- |
 | El runner es idéntico al que instaló | Lo actualiza sin preguntar |
 | El runner está **modificado a mano** | Avisa, muestra cómo diferenciarlo, y **no toca nada** (sale con código 2) |
-| Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada |
+| Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada. Desde el runner: `-Update -Force` |
 | Las series, el `series-estado.txt`, el `session-prompts.config.json` | **Nunca** se pisan |
 | Un `README.md` propio del repo (los ocho originales tienen el suyo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
 
@@ -358,4 +383,13 @@ Para publicar:
 2. `$script:RunnerVersion` al número nuevo.
 3. `CHANGELOG.md`: la sección `[No publicado]` pasa a ser la versión, con fecha.
 4. Commit y tag: `git tag -a v1.2.0 -m "v1.2.0"` y `git push --tags`.
-5. En los repos que lo usen, `Install-SessionPrompts.ps1` para actualizar.
+5. **Publicar el release**, que es lo que hace que `-FromRelease` y `-Update` vean la versión nueva:
+
+   ```bash
+   gh release create v1.2.0 --title "v1.2.0" --notes-file <(sed -n '/## \[1.2.0\]/,/^## \[/p' CHANGELOG.md)
+   ```
+
+   No hace falta subir ningún archivo: el instalador usa el `.zip` del código del tag, que GitHub
+   arma solo. Mientras el repo sea privado, la descarga anónima devuelve 404 y tanto el instalador
+   como el runner caen a `gh`, que usa tu credencial; cuando el repo sea público, funciona sin `gh`.
+6. En los repos que lo usen: `Run-SessionPrompts.ps1 -Update`, o esperar a que lo ofrezca solo.

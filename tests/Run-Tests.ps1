@@ -131,6 +131,14 @@ function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fa
     $env:FAKE_CLAUDE_LOG = $fixture.Log
     if ($fakeExit) { $env:FAKE_CLAUDE_EXIT = "$fakeExit" } else { Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue }
 
+    # Ningun caso sale a la red salvo los que prueban el chequeo de version, que pasan
+    # -SkipUpdateCheck explicitamente... al reves: se lo sacan.
+    if (-not ($argumentos -contains '-ProbarChequeo')) {
+        $argumentos = @('-SkipUpdateCheck') + $argumentos
+    } else {
+        $argumentos = @($argumentos | Where-Object { $_ -ne '-ProbarChequeo' })
+    }
+
     if ($Legacy) {
         # $PSNativeCommandArgumentPassing solo se puede fijar ANTES de invocar el runner, y con
         # -File no hay donde hacerlo: por eso este camino usa -Command.
@@ -304,6 +312,36 @@ function New-EcoShim($fixture) {
         ('"' + $exeAlLado + '" %*')
     )
     return $shim
+}
+
+# --- El release de mentira -------------------------------------------------
+# Para probar la instalacion y la actualizacion desde un release sin depender de GitHub: se arma
+# un .zip con la misma forma que el zipball de un tag (una carpeta arriba con todo adentro), y
+# un JSON con la forma de la respuesta de la API.
+function New-ReleaseFalso([string]$version) {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-rel-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $adentro = Join-Path $dir "RunSessionPrompts-$version"
+    New-Item -ItemType Directory -Path $adentro -Force | Out-Null
+    $script:Temporales += $dir
+
+    $productoRaiz = Split-Path -Parent $PSScriptRoot
+    Copy-Item -LiteralPath (Join-Path $productoRaiz 'Run-SessionPrompts.ps1') -Destination $adentro
+    Copy-Item -LiteralPath (Join-Path $productoRaiz 'Install-SessionPrompts.ps1') -Destination $adentro
+    Copy-Item -LiteralPath (Join-Path $productoRaiz 'templates') -Destination $adentro -Recurse
+
+    # La version que dice el runner del "release" tiene que ser la del tag.
+    $runner = Join-Path $adentro 'Run-SessionPrompts.ps1'
+    $texto = Get-Content -LiteralPath $runner -Raw -Encoding UTF8
+    $texto = [regex]::Replace($texto, "(?m)^\s*\`$script:RunnerVersion\s*=\s*'[^']+'", "`$script:RunnerVersion = '$version'")
+    Set-Content -LiteralPath $runner -Value $texto -Encoding UTF8 -NoNewline
+
+    $zip = Join-Path $dir "release-$version.zip"
+    Compress-Archive -Path $adentro -DestinationPath $zip -Force
+
+    $json = Join-Path $dir 'releases-latest.json'
+    Set-Content -LiteralPath $json -Value ("{`"tag_name`": `"v$version`"}") -Encoding UTF8
+
+    return [pscustomobject]@{ Zip = $zip; Json = $json; Version = $version }
 }
 
 # --- Casos ----------------------------------------------------------------
@@ -1122,6 +1160,187 @@ Test-Case "-WhatIf no instala nada ni lanza la sesion" {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $repo 'docs\session-prompts\Run-SessionPrompts.ps1'))) "no tenia que copiar nada"
     Assert-True (-not (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG)) "ni lanzar la sesion"
     Assert-Match 'lanzaria una sesion' $r.Salida "pero si decir que la lanzaria"
+}
+
+Test-Case "el instalador instala desde un zip de release, sin tocar la red" {
+    $repo = New-RepoVacio
+    $rel = New-ReleaseFalso '9.9.9'
+
+    $r = Invoke-Instalador $repo @('-ReleaseZip', $rel.Zip)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'Instalando desde' $r.Salida "tiene que decir de donde instala"
+
+    $marca = Get-Content -LiteralPath (Join-Path $repo 'docs\session-prompts\.session-prompts-version') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Equal '9.9.9' $marca.version "la version instalada es la del release, no la de esta carpeta"
+}
+
+Test-Case "-FromRelease resuelve el tag y usa el zip que le den" {
+    $repo = New-RepoVacio
+    $rel = New-ReleaseFalso '9.9.9'
+
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    $env:SESSION_PROMPTS_RELEASE_ZIP = $rel.Zip
+    try {
+        $r = Invoke-Instalador $repo @('-FromRelease', 'latest')
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+        Remove-Item Env:\SESSION_PROMPTS_RELEASE_ZIP -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-True (Test-Path -LiteralPath (Join-Path $repo 'docs\session-prompts\Run-SessionPrompts.ps1')) "tenia que instalar"
+}
+
+Test-Case "-FromRelease sin poder averiguar el tag corta con un error que dice que hacer" {
+    $repo = New-RepoVacio
+    $env:SESSION_PROMPTS_RELEASES_URL = Join-Path ([System.IO.Path]::GetTempPath()) 'no-existe-este-json.json'
+    try {
+        $r = Invoke-Instalador $repo @('-FromRelease', 'latest')
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
+    Assert-Match 'No pude averiguar cual es el ultimo release' $r.Salida "con el motivo"
+    Assert-Match '-FromRelease v1\.2\.3' $r.Salida "y con la salida a mano"
+}
+
+Test-Case "el runner -Update baja el release y lo instala en su repo" {
+    $f = New-Fixture
+    $rel = New-ReleaseFalso '9.9.9'
+
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    $env:SESSION_PROMPTS_RELEASE_ZIP = $rel.Zip
+    try {
+        # -Force porque el runner del fixture se copio a mano y no tiene marca de version:
+        # es exactamente el estado de los repos que todavia usan la copia vieja.
+        $r = Invoke-Runner $f @('-Update', '-SkipClaudeMd', '-Force')
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+        Remove-Item Env:\SESSION_PROMPTS_RELEASE_ZIP -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'Actualizado a v9.9.9' $r.Salida "tiene que decir a que version quedo"
+    Assert-Match 'Volve a correr el script' $r.Salida "y que hay que volver a correrlo"
+
+    $instalado = Get-Content -LiteralPath $f.Runner -Raw -Encoding UTF8
+    Assert-Match "RunnerVersion = '9.9.9'" $instalado "el runner del repo tiene que ser el del release"
+}
+
+Test-Case "-Update cuando ya estas en la ultima version no hace nada" {
+    $f = New-Fixture
+    $rel = New-ReleaseFalso '0.0.1'
+
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    try {
+        $r = Invoke-Runner $f @('-Update')
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'Ya estas en la ultima version' $r.Salida "tiene que decirlo"
+}
+
+Test-Case "al arrancar avisa que hay una version nueva y ofrece instalarla" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-chequeo' @{ '01-uno.md' = 'x' }
+    $rel = New-ReleaseFalso '9.9.9'
+
+    # El chequeo se anota una vez por dia en el perfil de la maquina: cada caso usa el suyo.
+    $perfil = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-perfil-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $perfil -Force | Out-Null
+    $script:Temporales += $perfil
+
+    $localAppDataOriginal = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $perfil
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    try {
+        # Respondemos [2]: seguir con la version que tenemos.
+        $r = Invoke-Runner $f @('-ProbarChequeo', '-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) "2`n"
+    } finally {
+        $env:LOCALAPPDATA = $localAppDataOriginal
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "la corrida tiene que seguir. Salida:`n$($r.Salida)"
+    Assert-Match 'Hay una version nueva' $r.Salida "tiene que avisar"
+    Assert-Match 'v9.9.9' $r.Salida "con cual"
+    Assert-Equal 1 (Get-Sesiones $f).Count "y despues correr la serie igual"
+
+    # El chequeo quedo anotado: la proxima corrida del dia no vuelve a preguntar.
+    Assert-True (Test-Path -LiteralPath (Join-Path $perfil 'RunSessionPrompts\ultimo-chequeo.txt')) "tiene que anotar el chequeo"
+}
+
+Test-Case "si no se puede averiguar la version, la corrida sigue igual" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-red' @{ '01-uno.md' = 'x' }
+
+    $perfil = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-perfil-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $perfil -Force | Out-Null
+    $script:Temporales += $perfil
+
+    $localAppDataOriginal = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $perfil
+    $env:SESSION_PROMPTS_RELEASES_URL = Join-Path ([System.IO.Path]::GetTempPath()) 'no-existe.json'
+    try {
+        $r = Invoke-Runner $f @('-ProbarChequeo', '-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    } finally {
+        $env:LOCALAPPDATA = $localAppDataOriginal
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "no poder chequear no puede romper la corrida. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'Hay una version nueva' $r.Salida "no puede inventar una version"
+    Assert-Equal 1 (Get-Sesiones $f).Count "y la serie corre igual"
+}
+
+Test-Case "checkForUpdates false en la configuracion apaga el chequeo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-chequeo' @{ '01-uno.md' = 'x' }
+    $rel = New-ReleaseFalso '9.9.9'
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "checkForUpdates": false }'
+
+    $perfil = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-perfil-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $perfil -Force | Out-Null
+    $script:Temporales += $perfil
+
+    $localAppDataOriginal = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $perfil
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    try {
+        $r = Invoke-Runner $f @('-ProbarChequeo', '-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    } finally {
+        $env:LOCALAPPDATA = $localAppDataOriginal
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'Hay una version nueva' $r.Salida "con la configuracion en false no tiene que chequear"
+}
+
+Test-Case "-Update no pisa un runner que el instalador no reconoce, y dice como forzarlo" {
+    $f = New-Fixture
+    $rel = New-ReleaseFalso '9.9.9'
+
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    $env:SESSION_PROMPTS_RELEASE_ZIP = $rel.Zip
+    try {
+        # Sin -Force, contra un runner copiado a mano (sin marca de version).
+        $r = Invoke-Runner $f @('-Update', '-SkipClaudeMd')
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+        Remove-Item Env:\SESSION_PROMPTS_RELEASE_ZIP -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($r.ExitCode -ne 0) "no puede decir que actualizo si no actualizo"
+    Assert-NotMatch 'Actualizado a' $r.Salida "y no puede anunciar lo contrario"
+    Assert-Match 'sin marca de version' $r.Salida "con el motivo del instalador"
+    Assert-Match '-Update -Force' $r.Salida "y con la salida"
+
+    $instalado = Get-Content -LiteralPath $f.Runner -Raw -Encoding UTF8
+    Assert-NotMatch "RunnerVersion = '9.9.9'" $instalado "el runner tiene que haber quedado como estaba"
 }
 
 # --- Cierre ---------------------------------------------------------------
