@@ -243,12 +243,9 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
+> Las versiones anteriores a la 1.4.1 no tienen tag: existieron el mismo dia, mientras el producto
+> se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
+> es la que buscan `-FromRelease latest` y `-Update`.
+
 [No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.1...HEAD
-[1.4.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.0...v1.4.1
-[1.4.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.3.0...v1.4.0
-[1.3.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...v1.3.0
-[1.2.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.1...v1.2.0
-[1.1.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.0.0
+[1.4.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.4.1
