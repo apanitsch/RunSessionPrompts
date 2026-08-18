@@ -6,6 +6,26 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.5.0] — 2026-08-18
+
+### Cambiado
+
+- **Bajar el release es el comportamiento por defecto cuando el instalador está solo.** Si
+  `Install-SessionPrompts.ps1` no tiene el producto al lado —que es como queda cuando lo bajás por
+  tu cuenta— no tiene de dónde instalar, así que baja el último release sin que se lo pidan, y lo
+  dice. Con el producto al lado (un clon, o el release ya descomprimido) sigue instalando desde ahí,
+  sin tocar la red. `-FromRelease` queda para pedir un tag distinto del último, o para forzar la
+  descarga teniendo el producto al lado.
+- El comando de instalación del README quedó en lo mínimo: sin `-FromRelease latest` y sin `-Repo`,
+  que ya salía del directorio donde estés parado (o de cualquier subcarpeta del repo).
+
+### Corregido
+
+- El instalador caía a `gh` para averiguar el último release **aunque le hubieran apuntado a otro
+  origen** con `SESSION_PROMPTS_RELEASES_URL`: terminaba instalando un release distinto del pedido,
+  en silencio. Ahora ese fallback sólo corre cuando el origen es la API de GitHub, como ya hacía el
+  runner. Lo encontró un test que empezó a fallar cuando se publicó el primer release de verdad.
+
 ## [1.4.1] — 2026-08-18
 
 ### Cambiado
@@ -247,5 +267,6 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.1...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.5.0
 [1.4.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.4.1
