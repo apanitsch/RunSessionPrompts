@@ -27,9 +27,13 @@
     instalador. Ahi vive el trabajo del repo destino.
 
 .PARAMETER FromRelease
-    En vez de instalar desde esta carpeta, baja el ultimo release publicado en GitHub (o el tag
-    que se le pase) y instala desde ahi. Sirve para instalar o actualizar sin tener un clon del
-    producto: alcanza con este archivo.
+    Baja un release publicado en GitHub y instala desde ahi, en vez de instalar desde la carpeta
+    donde esta este archivo. 'latest' para el ultimo, o un tag ('v1.2.3') para uno concreto.
+
+    NO hace falta pasarlo para el caso normal: si este archivo esta SOLO -- sin el resto del
+    producto al lado, que es como queda cuando lo bajas por su cuenta -- baja el ultimo release
+    igual. El parametro esta para pedir un tag distinto del ultimo, o para forzar la descarga
+    teniendo el producto al lado.
 
 .PARAMETER ReleaseZip
     Instala desde un .zip del release ya bajado, sin tocar la red. Es lo que usa -FromRelease por
@@ -60,8 +64,8 @@
     Dice que haria y no toca nada.
 
 .EXAMPLE
-    # Instalar en el repo donde estas parado.
-    pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1
+    # Instalar en el repo donde estas parado. Si este archivo esta solo, baja el ultimo release.
+    pwsh -File .\Install-SessionPrompts.ps1
 
 .EXAMPLE
     # Instalar en otro repo.
@@ -97,11 +101,28 @@ $ErrorActionPreference = 'Stop'
 $script:RepoGitHub = 'apanitsch/RunSessionPrompts'
 
 # --- Instalar desde un release en vez de desde esta carpeta ----------------
-# La idea es que ESTE archivo solo alcance: lo bajas suelto, lo corres con -FromRelease, y el se
-# encarga de traer el resto. Lo que hace es bajar el .zip del tag, descomprimirlo, y REEJECUTAR
-# el instalador que viene adentro -- no el de aca. Asi la instalacion la hace siempre la version
-# que se esta instalando, y este archivo puede quedar viejo sin que importe.
-if ($FromRelease -or $ReleaseZip) {
+# La idea es que ESTE archivo solo alcance: lo bajas suelto, lo corres, y el se encarga de traer
+# el resto. Lo que hace es bajar el .zip del tag, descomprimirlo, y REEJECUTAR el instalador que
+# viene adentro -- no el de aca. Asi la instalacion la hace siempre la version que se esta
+# instalando, y este archivo puede quedar viejo sin que importe.
+#
+# Se dispara solo cuando hace falta: si el producto esta al lado (un clon, o el release ya
+# descomprimido) se instala desde ahi, sin tocar la red. Si no esta, no hay de donde instalar,
+# asi que se baja -- por eso el caso normal no necesita ningun parametro.
+$productoAlLado = Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Run-SessionPrompts.ps1')
+
+if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
+    # Cinturon contra un lazo infinito: si el zip bajado no trajera el producto, el instalador
+    # de adentro volveria a bajar, y asi para siempre.
+    if ($env:SESSION_PROMPTS_INSTALANDO -eq '1') {
+        Write-Host "El release que baje no trae Run-SessionPrompts.ps1 al lado del instalador." -ForegroundColor Red
+        exit 1
+    }
+
+    if (-not $productoAlLado -and -not $FromRelease -and -not $ReleaseZip) {
+        Write-Host "No tengo el producto al lado de este archivo, asi que lo bajo del ultimo release." -ForegroundColor DarkGray
+    }
+
     $zip = $ReleaseZip
 
     # Mismo override que el runner: un zip ya bajado, para una maquina sin salida a internet
@@ -127,9 +148,13 @@ if ($FromRelease -or $ReleaseZip) {
                 $tag = [string]$json.tag_name
             } catch { }
 
-            # Mientras el repo sea privado, la API anonima contesta 404; 'gh' usa la credencial
-            # del usuario y sirve para las dos etapas.
-            if (-not $tag) {
+            # Si no se pudo por HTTP, 'gh' usa la credencial del usuario (sirve si el repo
+            # vuelve a ser privado, o para pasar el limite de la API anonima).
+            #
+            # SOLO cuando el origen es el de siempre: si alguien apunto a un mirror o a un
+            # archivo, caer a GitHub instalaria un release DISTINTO del que pidio, y en
+            # silencio.
+            if (-not $tag -and $fuente -match '^https?://api\.github\.com') {
                 $gh = Get-Command gh -ErrorAction SilentlyContinue
                 if ($gh) {
                     $salida = & $gh.Source api "repos/$script:RepoGitHub/releases/latest" 2>$null
@@ -196,13 +221,21 @@ if ($FromRelease -or $ReleaseZip) {
 
     Write-Host "Instalando desde $($inst[0].DirectoryName)" -ForegroundColor DarkGray
     Write-Host ""
-    & pwsh -NoProfile -File $inst[0].FullName @paraPasar
-    exit $LASTEXITCODE
+    $env:SESSION_PROMPTS_INSTALANDO = '1'
+    try {
+        & pwsh -NoProfile -File $inst[0].FullName @paraPasar
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_INSTALANDO -ErrorAction SilentlyContinue
+    }
+    exit $code
 }
 
 $origen = $PSScriptRoot
 $runnerOrigen = Join-Path $origen 'Run-SessionPrompts.ps1'
 
+# A esta altura el runner tiene que estar: si no estaba, arriba se bajo el release y este
+# archivo ya no es el que sigue.
 if (-not (Test-Path -LiteralPath $runnerOrigen)) {
     Write-Host "No encuentro Run-SessionPrompts.ps1 al lado de este instalador." -ForegroundColor Red
     exit 1

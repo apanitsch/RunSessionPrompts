@@ -5,14 +5,16 @@ limpio y con Remote Control, para que la serie entera avance sin que tengas que 
 
 ## Instalar
 
-En el repo donde lo quieras usar. No hace falta clonar nada: alcanza con bajar el instalador, que
-después se trae el resto.
+Parado en el repo donde lo quieras usar. No hace falta clonar nada: alcanza con bajar el
+instalador, que después se trae el resto.
 
 ```bash
-irm https://raw.githubusercontent.com/apanitsch/RunSessionPrompts/main/Install-SessionPrompts.ps1 -OutFile $env:TEMP\Install-SessionPrompts.ps1; pwsh -File $env:TEMP\Install-SessionPrompts.ps1 -FromRelease latest -Repo C:\ruta\a\MiRepo
+irm https://raw.githubusercontent.com/apanitsch/RunSessionPrompts/main/Install-SessionPrompts.ps1 -OutFile $env:TEMP\Install-SessionPrompts.ps1; pwsh -File $env:TEMP\Install-SessionPrompts.ps1
 ```
 
-Eso deja el andamiaje en `MiRepo\docs\session-prompts\` y el repo listo para correr series.
+Eso deja el andamiaje en `<tu-repo>\docs\session-prompts\` y el repo listo para correr series.
+Funciona igual desde cualquier subcarpeta del repo. Si querés instalarlo en **otro** repo sin
+moverte, `-Repo C:\ruta\a\MiRepo`.
 
 Después, desde el repo ya instalado:
 
@@ -27,10 +29,17 @@ pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1
 
 ### Qué hace ese comando
 
-Baja el `.zip` del último release, lo descomprime y **se re-ejecuta desde adentro**: la instalación
-la hace siempre la versión que se está instalando, así que el archivo que bajaste puede quedar viejo
-sin que importe. Con `-FromRelease v1.2.3` se instala un tag concreto, y con `-ReleaseZip <ruta>`
-desde un `.zip` ya bajado, sin tocar la red.
+Como ese archivo quedó **solo** —sin el resto del producto al lado—, no tiene de dónde instalar: baja
+el `.zip` del último release, lo descomprime y **se re-ejecuta desde adentro**. La instalación la
+hace siempre la versión que se está instalando, así que el archivo que bajaste puede quedar viejo sin
+que importe.
+
+| Variante | Para qué |
+| --- | --- |
+| `-Repo C:\ruta\a\MiRepo` | instalar en otro repo sin moverte |
+| `-FromRelease v1.2.3` | un tag concreto en vez del último |
+| `-ReleaseZip <ruta>` | desde un `.zip` ya bajado, sin tocar la red |
+| `-SkipClaudeMd` | no lanzar la sesión que actualiza el `CLAUDE.md` |
 
 Deja en `MiRepo\docs\session-prompts\` (o `Docs\session-prompts\`, si el repo ya usa esa
 convención):
@@ -55,7 +64,9 @@ El prompt de esa sesión es [`templates/prompt-instalacion-claude-md.md`](templa
 y se puede editar. Con `-SkipClaudeMd` no se lanza; con `-Model` y `-Effort` se elige con qué corre
 (por defecto `opus` y `high`).
 
-Si tenés el clon del producto a mano, el instalador de ahí hace lo mismo sin bajar nada:
+Si tenés el clon del producto a mano, el instalador de ahí instala **desde el clon**, sin bajar nada
+—porque tiene el producto al lado—. Con `-FromRelease latest` se lo puede forzar a usar el release
+igual:
 
 ```bash
 pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo

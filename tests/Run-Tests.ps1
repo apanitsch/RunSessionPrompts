@@ -1343,6 +1343,49 @@ Test-Case "-Update no pisa un runner que el instalador no reconoce, y dice como 
     Assert-NotMatch "RunnerVersion = '9.9.9'" $instalado "el runner tiene que haber quedado como estaba"
 }
 
+Test-Case "el instalador solo, sin el producto al lado, baja el release sin que se lo pidan" {
+    $repo = New-RepoVacio
+    $rel = New-ReleaseFalso '9.9.9'
+
+    # Se copia SOLO el instalador a una carpeta aparte: es como queda cuando lo bajas por su
+    # cuenta con irm.
+    $suelto = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-suelto-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $suelto -Force | Out-Null
+    $script:Temporales += $suelto
+    Copy-Item -LiteralPath $script:Instalador -Destination $suelto
+
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    $env:SESSION_PROMPTS_RELEASE_ZIP = $rel.Zip
+    try {
+        # Sin -FromRelease y sin -Repo: sale del directorio donde se lo corre.
+        Push-Location -LiteralPath $repo
+        try {
+            $salida = & pwsh -NoProfile -File (Join-Path $suelto 'Install-SessionPrompts.ps1') -SkipClaudeMd 2>&1
+            $code = $LASTEXITCODE
+        } finally { Pop-Location }
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+        Remove-Item Env:\SESSION_PROMPTS_RELEASE_ZIP -ErrorAction SilentlyContinue
+    }
+
+    $texto = ($salida | ForEach-Object { "$_" }) -join "`n"
+    Assert-Equal 0 $code "exit code. Salida:`n$texto"
+    Assert-Match 'No tengo el producto al lado' $texto "tiene que decir por que baja el release"
+
+    $marca = Get-Content -LiteralPath (Join-Path $repo 'docs\session-prompts\.session-prompts-version') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Equal '9.9.9' $marca.version "instalo la version del release"
+}
+
+Test-Case "con el producto al lado NO baja nada: instala desde la carpeta" {
+    $repo = New-RepoVacio
+
+    # Sin overrides de release ni red: si intentara bajar algo, fallaria.
+    $r = Invoke-Instalador $repo @()
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'No tengo el producto al lado' $r.Salida "tiene el producto al lado"
+    Assert-NotMatch 'Bajando el release' $r.Salida "asi que no tiene que bajar nada"
+}
+
 # --- Cierre ---------------------------------------------------------------
 
 Write-Host ""
