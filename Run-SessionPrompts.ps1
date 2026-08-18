@@ -281,7 +281,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.4.0'
+$script:RunnerVersion = '1.4.1'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"

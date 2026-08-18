@@ -3,10 +3,95 @@
 Corre **series de prompts numerados** con Claude Code: un prompt por sesión, cada uno en contexto
 limpio y con Remote Control, para que la serie entera avance sin que tengas que estar en la máquina.
 
-Este repo es el **producto**: la versión con control de cambios de un script que hasta ahora vivía
-copiado y pegado —y divergiendo— en `docs/session-prompts/` de ocho repositorios distintos. Lo que
-hay acá es la **suma** de todas esas versiones, más lo que hace falta para instalarlo y actualizarlo
-en cualquier repo. Qué aportó cada una está en [`docs/analisis-de-versiones.md`](docs/analisis-de-versiones.md).
+## Instalar
+
+En el repo donde lo quieras usar. No hace falta clonar nada: alcanza con bajar el instalador, que
+después se trae el resto.
+
+```bash
+irm https://raw.githubusercontent.com/apanitsch/RunSessionPrompts/main/Install-SessionPrompts.ps1 -OutFile $env:TEMP\Install-SessionPrompts.ps1; pwsh -File $env:TEMP\Install-SessionPrompts.ps1 -FromRelease latest -Repo C:\ruta\a\MiRepo
+```
+
+Eso deja el andamiaje en `MiRepo\docs\session-prompts\` y el repo listo para correr series.
+
+Después, desde el repo ya instalado:
+
+```bash
+pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1
+```
+
+> **Siempre con `pwsh`, nunca con `powershell`.** No es preferencia: bajo Windows PowerShell 5.1 los
+> prompts llegan mutilados **en silencio**. El detalle, medido, está en
+> [Cómo llega el prompt hasta Claude](#cómo-llega-el-prompt-hasta-claude).
+
+
+### Qué hace ese comando
+
+Baja el `.zip` del último release, lo descomprime y **se re-ejecuta desde adentro**: la instalación
+la hace siempre la versión que se está instalando, así que el archivo que bajaste puede quedar viejo
+sin que importe. Con `-FromRelease v1.2.3` se instala un tag concreto, y con `-ReleaseZip <ruta>`
+desde un `.zip` ya bajado, sin tocar la red.
+
+Deja en `MiRepo\docs\session-prompts\` (o `Docs\session-prompts\`, si el repo ya usa esa
+convención):
+
+| Qué | Para qué |
+| --- | --- |
+| `Run-SessionPrompts.ps1` | el runner |
+| `README.md` | **la referencia para los agentes del repo**: qué es el andamiaje, cómo se corre, y los criterios para elegir modelo y effort de cada sesión |
+| `_plantillas/` | los moldes de una serie y de un prompt |
+| `series-estado.txt` | qué series están pendientes y en qué orden (sólo la primera vez) |
+| `session-prompts.config.json` | lo que ese repo fija por defecto (sólo la primera vez) |
+| `.session-prompts-version` | versión y hashes de lo instalado |
+
+Y después **lanza una sesión de Claude Code en el repo destino** para dejar el andamiaje
+descubrible: que el `CLAUDE.md` de ese repo lo nombre, diga para qué sirve, cómo se corre y que la
+referencia es ese `README.md`. La misma sesión **corrige las afirmaciones viejas** que el repo tenga
+de versiones anteriores del script — `powershell` en vez de `pwsh`, "el script escapa siempre", "el
+corte es 30000", un id de modelo viejo, "cada serie corre en un worktree". Los cambios quedan **sin
+commitear**, para que los revises.
+
+El prompt de esa sesión es [`templates/prompt-instalacion-claude-md.md`](templates/prompt-instalacion-claude-md.md)
+y se puede editar. Con `-SkipClaudeMd` no se lanza; con `-Model` y `-Effort` se elige con qué corre
+(por defecto `opus` y `high`).
+
+Si tenés el clon del producto a mano, el instalador de ahí hace lo mismo sin bajar nada:
+
+```bash
+pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo
+```
+
+### Actualizar
+
+Desde el repo donde ya está instalado, sin acordarse de dónde vive el producto:
+
+```bash
+pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1 -Update
+```
+
+Y no hace falta acordarse ni de eso: **al arrancar, una vez por día, el runner chequea si hay una
+versión nueva** y la ofrece antes de cualquier menú. Si no hay conexión, o si todavía no hay
+releases, la corrida sigue igual — el chequeo tiene cinco segundos de paciencia y nunca corta nada.
+Se apaga con `-SkipUpdateCheck`, o para siempre con `"checkForUpdates": false` en la configuración
+del repo.
+
+El instalador no pisa nada que no haya puesto él:
+
+| Situación en el destino | Qué hace |
+| --- | --- |
+| El runner es idéntico al que instaló | Lo actualiza sin preguntar |
+| El runner está **modificado a mano** | Avisa, muestra cómo diferenciarlo, y **no toca nada** (sale con código 2) |
+| Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada. Desde el runner: `-Update -Force` |
+| Las series, el `series-estado.txt`, el `session-prompts.config.json` | **Nunca** se pisan |
+| Un `README.md` propio del repo (los ocho originales tienen el suyo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
+
+Con `-Force` pisa igual, dejando un `.bak` al lado. Con `-WhatIf` dice qué haría y no toca nada.
+
+### Sin instalar
+
+El runner también funciona desde donde esté: si la carpeta donde vive no tiene series adentro, busca
+`docs/session-prompts` (o `Docs/`, o con guión bajo) en el repo git donde estés parado. O se lo decís
+con `-SeriesRoot`.
 
 ---
 
@@ -40,82 +125,6 @@ script lanza la siguiente. Si una sesión sale con error, la corrida se corta ah
 
 **Todo lo que hay que decidir se pregunta al principio**, antes de la primera sesión. Es la única
 promesa que el script no puede romper: contestás una vez y te vas.
-
----
-
-## Instalación
-
-Desde el release publicado en GitHub, sin clonar nada. Alcanza con bajar el instalador:
-
-```bash
-irm https://raw.githubusercontent.com/apanitsch/RunSessionPrompts/main/Install-SessionPrompts.ps1 -OutFile $env:TEMP\Install-SessionPrompts.ps1; pwsh -File $env:TEMP\Install-SessionPrompts.ps1 -FromRelease latest -Repo C:\ruta\a\MiRepo
-```
-
-Ese instalador baja el `.zip` del último release, lo descomprime, y **se re-ejecuta desde adentro**:
-la instalación la hace siempre la versión que se está instalando, así que el archivo que bajaste
-puede quedar viejo sin que importe. Con `-FromRelease v1.2.3` se instala un tag concreto, y con
-`-ReleaseZip <ruta>` desde un `.zip` ya bajado (una máquina sin salida a internet).
-
-O, si tenés el clon del producto a mano:
-
-```bash
-pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo
-```
-
-Eso deja en `MiRepo\docs\session-prompts\` (o `Docs\session-prompts\`, si el repo ya usa esa
-convención):
-
-| Qué | Para qué |
-| --- | --- |
-| `Run-SessionPrompts.ps1` | el runner |
-| `README.md` | **la referencia para los agentes del repo**: qué es el andamiaje, cómo se corre, y los criterios para elegir modelo y effort de cada sesión |
-| `_plantillas/` | los moldes de una serie y de un prompt |
-| `series-estado.txt` | qué series están pendientes y en qué orden (sólo la primera vez) |
-| `session-prompts.config.json` | lo que ese repo fija por defecto (sólo la primera vez) |
-| `.session-prompts-version` | versión y hashes de lo instalado |
-
-Y después **lanza una sesión de Claude Code en el repo destino** para dejar el andamiaje
-descubrible: que el `CLAUDE.md` de ese repo lo nombre, diga para qué sirve, cómo se corre y que la
-referencia es ese `README.md`. La misma sesión **corrige las afirmaciones viejas** que el repo tenga
-de versiones anteriores del script — `powershell` en vez de `pwsh`, "el script escapa siempre", "el
-corte es 30000", un id de modelo viejo, "cada serie corre en un worktree". Los cambios quedan **sin
-commitear**, para que los revises.
-
-El prompt de esa sesión es [`templates/prompt-instalacion-claude-md.md`](templates/prompt-instalacion-claude-md.md)
-y se puede editar. Con `-SkipClaudeMd` no se lanza; con `-Model` y `-Effort` se elige con qué corre
-(por defecto `opus` y `high`).
-
-### Actualizar
-
-Desde el repo donde ya está instalado, sin acordarse de dónde vive el producto:
-
-```bash
-pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1 -Update
-```
-
-Y no hace falta acordarse ni de eso: **al arrancar, una vez por día, el runner chequea si hay una
-versión nueva** y la ofrece antes de cualquier menú. Si no hay conexión, o si todavía no hay
-releases, la corrida sigue igual — el chequeo tiene cinco segundos de paciencia y nunca corta nada.
-Se apaga con `-SkipUpdateCheck`, o para siempre con `"checkForUpdates": false` en la configuración
-del repo.
-
-El instalador no pisa nada que no haya puesto él:
-
-| Situación en el destino | Qué hace |
-| --- | --- |
-| El runner es idéntico al que instaló | Lo actualiza sin preguntar |
-| El runner está **modificado a mano** | Avisa, muestra cómo diferenciarlo, y **no toca nada** (sale con código 2) |
-| Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada. Desde el runner: `-Update -Force` |
-| Las series, el `series-estado.txt`, el `session-prompts.config.json` | **Nunca** se pisan |
-| Un `README.md` propio del repo (los ocho originales tienen el suyo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
-
-Con `-Force` pisa igual, dejando un `.bak` al lado. Con `-WhatIf` dice qué haría y no toca nada.
-
-### Sin instalar
-
-El runner también funciona desde donde esté: si la carpeta donde vive no tiene series adentro, busca
-`docs/session-prompts` (o `Docs/`, o con guión bajo) en el repo git donde estés parado. O se lo decís
-con `-SeriesRoot`.
 
 ---
 
@@ -350,6 +359,16 @@ la vista**, no en silencio.
 
 ---
 
+## De dónde salió
+
+Este repo es el **producto**: la versión con control de cambios de un script que hasta agosto de 2026
+vivía copiado y pegado —y divergiendo— en `docs/session-prompts/` de ocho repositorios distintos. Lo
+que hay acá es la **suma** de todas esas versiones, más lo que hace falta para instalarlo y
+actualizarlo en cualquier repo. Qué aportó cada una, y qué se descartó, está en
+[`docs/analisis-de-versiones.md`](docs/analisis-de-versiones.md).
+
+---
+
 ## Desarrollo
 
 ### Tests
@@ -390,6 +409,6 @@ Para publicar:
    ```
 
    No hace falta subir ningún archivo: el instalador usa el `.zip` del código del tag, que GitHub
-   arma solo. Mientras el repo sea privado, la descarga anónima devuelve 404 y tanto el instalador
-   como el runner caen a `gh`, que usa tu credencial; cuando el repo sea público, funciona sin `gh`.
+   arma solo. El repo es público, así que la descarga es anónima; queda un fallback a `gh` por si
+   alguna vez vuelve a ser privado, o para pasar el límite de la API anónima.
 6. En los repos que lo usen: `Run-SessionPrompts.ps1 -Update`, o esperar a que lo ofrezca solo.

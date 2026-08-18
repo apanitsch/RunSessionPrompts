@@ -6,6 +6,20 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+## [1.4.1] — 2026-08-18
+
+### Cambiado
+
+- El [README](README.md) arranca con **cómo instalar**: el repo es público, así que la primera cosa
+  que ve alguien que llega tiene que ser el comando que lo pone a andar. El contexto de de dónde
+  salió el producto bajó a su propia sección.
+- Los documentos ya no hablan de una etapa privada: la descarga es anónima. El fallback a `gh` que
+  tienen el runner y el instalador queda por si el repo vuelve a ser privado, o para pasar el
+  límite de la API anónima.
+- Cuando no se puede averiguar cuál es el último release, el instalador ahora dice que **puede que
+  todavía no haya ninguno publicado** —además de la posibilidad de que no haya conexión— y ofrece
+  las dos salidas: `-FromRelease <tag>` y `-ReleaseZip <ruta>`.
+
 ## [1.4.0] — 2026-08-18
 
 Hasta acá, instalar y actualizar necesitaba tener el clon del producto en la máquina. Ahora no.
@@ -229,7 +243,8 @@ antes de actualizar:
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.0...HEAD
+[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.2.0...v1.2.1

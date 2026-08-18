@@ -99,6 +99,10 @@ Eso implica que **una versión no existe hasta que el release está publicado**:
 procedimiento del [README](README.md#versionado-y-releases) no es opcional. Se usa el `.zip` del
 código del tag, que GitHub arma solo; no hay que subir ningún archivo.
 
+El repo del producto es **público**, así que todo eso funciona sin credenciales. El fallback a `gh`
+que tienen el runner y el instalador queda por si alguna vez vuelve a ser privado, o para pasar el
+límite de la API anónima.
+
 ## 6. Dónde está instalado
 
 Los ocho repos de origen (Agentada, AtlasVDT, Buspack, Chat, Chat-usuarios-meta, ChatNet,

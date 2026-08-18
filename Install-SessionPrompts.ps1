@@ -141,7 +141,8 @@ if ($FromRelease -or $ReleaseZip) {
 
             if (-not $tag) {
                 Write-Host "No pude averiguar cual es el ultimo release de $script:RepoGitHub." -ForegroundColor Red
-                Write-Host "Pasale el tag: -FromRelease v1.2.3   |   o el zip: -ReleaseZip <ruta>" -ForegroundColor DarkGray
+                Write-Host "Puede que todavia no haya ninguno publicado, o que no haya conexion." -ForegroundColor DarkGray
+                Write-Host "Salidas: -FromRelease v1.2.3 (un tag concreto)  |  -ReleaseZip <ruta> (un zip ya bajado)" -ForegroundColor DarkGray
                 exit 1
             }
         }
