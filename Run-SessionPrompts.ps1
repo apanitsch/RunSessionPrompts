@@ -72,6 +72,8 @@
 .PARAMETER StartFrom
     Numero de prompt desde el cual empezar (ej: 3 arranca en el 03-...). Es un NUMERO, no el
     nombre de archivo. Si no se pasa, se pide (Enter = desde el primero).
+    No hace falta que exista un prompt con ese numero exacto: en una serie 01, 02, 05, un 3
+    arranca en el 05. Un numero posterior al ultimo prompt no deja nada que correr, y corta.
 
 .PARAMETER FullAuto
     Por defecto usa '--permission-mode acceptEdits' (auto-acepta ediciones; igual te puede
@@ -909,6 +911,13 @@ if ([string]::IsNullOrWhiteSpace($PromptsPath)) {
         if ($ans -match '^\d+$' -and [int]$ans -ge 1 -and [int]$ans -le $series.Count) {
             $PromptsPath = $series[[int]$ans - 1].FullName
             Write-Host "Serie: $($series[[int]$ans - 1].Name)" -ForegroundColor DarkGray
+        } elseif ($ans -match '^\d+$') {
+            # Sin esto, un numero fuera de la lista caia en la rama de abajo y se tomaba como
+            # RUTA: el script seguia preguntando desde-donde, modelo y effort, y recien al final
+            # cortaba con "No existe la carpeta: 7". Un numero es un numero, y si no esta en el
+            # menu es un error aca mismo.
+            Write-Host "Valor invalido: '$ans'. El menu va de 1 a $($series.Count)." -ForegroundColor Red
+            exit 1
         } elseif (-not [string]::IsNullOrWhiteSpace($ans)) {
             $PromptsPath = $ans   # ruta pegada a mano
         } else {
@@ -918,8 +927,40 @@ if ([string]::IsNullOrWhiteSpace($PromptsPath)) {
     }
 }
 
+# --- La serie ya elegida: carpeta y prompts --------------------------------
+# Se resuelve ACA, y no mas abajo, por dos motivos. Uno: que la carpeta no exista, o que no
+# tenga prompts, tiene que saltar AHORA y no despues de preguntar desde-donde, modelo y effort.
+# Dos: el numero de inicio se valida contra los prompts que hay, y para eso hay que conocerlos.
+if (-not (Test-Path -LiteralPath $PromptsPath)) {
+    Write-Host "No existe la carpeta: $PromptsPath" -ForegroundColor Red
+    exit 1
+}
+
+# Numero al inicio del nombre (01-foo.md -> 1). Sirve para ordenar y filtrar.
+function Get-PromptNumber($name) { [int]($name -replace '^(\d+).*$', '$1') }
+
+# Solo los .md que empiezan con numero: README.md y ESTADO.md no son prompts.
+# Orden numerico: 01-, 02- ... 10- (no alfabetico, para que 10 no venga antes que 2).
+# OJO: se resuelven ACA, con .FullName ABSOLUTO, ANTES de cambiar de directorio. Asi el loop
+# nunca depende de que $PromptsPath sea relativo (podria serlo).
+# @() para que un solo prompt (o ninguno) siga teniendo .Count.
+$prompts = @(Get-ChildItem -LiteralPath $PromptsPath -Filter *.md |
+    Where-Object { $_.Name -match '^\d+' } |
+    Sort-Object { Get-PromptNumber $_.Name }, Name)
+
+if ($prompts.Count -eq 0) {
+    Write-Host "No hay prompts .md para ejecutar en $PromptsPath" -ForegroundColor Yellow
+    Write-Host "Una serie son .md que empiezan con numero (01-..., 02-...): README.md y ESTADO.md no cuentan." -ForegroundColor DarkGray
+    exit 1
+}
+
+# Nombre de la serie (la carpeta). Va en el nombre de cada sesion, y de el salen la rama y el
+# worktree cuando la corrida es aislada.
+$serie = (Get-Item -LiteralPath $PromptsPath).Name
+$ultimoNumero = Get-PromptNumber $prompts[-1].Name
+
 if (-not $PSBoundParameters.ContainsKey('StartFrom')) {
-    $ans = Read-Host "Empezar desde el numero (Enter = desde el primero)"
+    $ans = Read-Host "Empezar desde el numero (Enter = desde el primero; la serie llega hasta el $ultimoNumero)"
     if ([string]::IsNullOrWhiteSpace($ans)) {
         $StartFrom = 0
     } elseif ($ans -match '^\d+$') {
@@ -928,6 +969,17 @@ if (-not $PSBoundParameters.ContainsKey('StartFrom')) {
         Write-Host "Valor invalido: '$ans'. Tiene que ser un numero." -ForegroundColor Red
         exit 1
     }
+}
+
+# Un numero de inicio mas grande que el ultimo prompt no saltea nada: no deja NADA para correr.
+# Antes eso se descubria recien despues de contestar modelo y effort, y el error solo decia que
+# no habia prompts -- que es tambien lo que dice una carpeta vacia, que se arregla de otra
+# forma. No se exige que exista un prompt con ese numero exacto: -StartFrom 3 en una serie
+# 01, 02, 05 arranca en el 05, que es exactamente lo que se pidio.
+if ($StartFrom -gt $ultimoNumero) {
+    Write-Host "No hay nada para correr desde el $StartFrom." -ForegroundColor Red
+    Write-Host ("La serie '{0}' tiene {1} prompts y el ultimo es el {2}: {3}" -f $serie, $prompts.Count, $ultimoNumero, $prompts[-1].Name) -ForegroundColor DarkGray
+    exit 1
 }
 
 # --- Modelo y effort ------------------------------------------------------
@@ -1000,11 +1052,6 @@ if ([string]::IsNullOrWhiteSpace($Effort)) {
         Write-Host "Valor invalido: '$ans'. Tiene que ser un numero de la lista." -ForegroundColor Red
         exit 1
     }
-}
-
-if (-not (Test-Path -LiteralPath $PromptsPath)) {
-    Write-Host "No existe la carpeta: $PromptsPath" -ForegroundColor Red
-    exit 1
 }
 
 # Los permisos son iguales para todas las sesiones de la corrida. El MODELO y el EFFORT no:
@@ -1156,32 +1203,12 @@ function Resolve-ComandoClaude([string]$comando) {
 
 $ClaudeCommand = Resolve-ComandoClaude $ClaudeCommand
 
-# Numero al inicio del nombre (01-foo.md -> 1). Sirve para ordenar y filtrar.
-function Get-PromptNumber($name) { [int]($name -replace '^(\d+).*$', '$1') }
-
-# Solo los .md que empiezan con numero: README.md y ESTADO.md no son prompts.
-# Orden numerico: 01-, 02- ... 10- (no alfabetico, para que 10 no venga antes que 2).
-# OJO: se resuelven ACA, con .FullName ABSOLUTO, ANTES de cambiar de directorio. Asi el loop
-# nunca depende de que $PromptsPath sea relativo (podria serlo).
-$prompts = Get-ChildItem -LiteralPath $PromptsPath -Filter *.md |
-    Where-Object { $_.Name -match '^\d+' } |
-    Sort-Object { Get-PromptNumber $_.Name }, Name
-
+# La carpeta, los prompts, el nombre de la serie y el numero de inicio ya se resolvieron y se
+# validaron arriba, antes de preguntar modelo y effort. Lo unico que falta es recortar.
+# El numero de inicio ya se comparo contra el ultimo prompt, asi que esto nunca vacia la lista.
 if ($StartFrom -gt 0) {
-    $prompts = $prompts | Where-Object { (Get-PromptNumber $_.Name) -ge $StartFrom }
+    $prompts = @($prompts | Where-Object { (Get-PromptNumber $_.Name) -ge $StartFrom })
 }
-
-# @() para que un solo prompt (o ninguno) siga teniendo .Count.
-$prompts = @($prompts)
-
-if ($prompts.Count -eq 0) {
-    Write-Host "No hay prompts .md para ejecutar en $PromptsPath (StartFrom = $StartFrom)." -ForegroundColor Yellow
-    exit 1
-}
-
-# Nombre de la serie (la carpeta). Va en el nombre de cada sesion, y de el salen la rama y el
-# worktree cuando la corrida es aislada.
-$serie = (Get-Item -LiteralPath $PromptsPath).Name
 
 # --- Donde corren las sesiones --------------------------------------------
 # claude agrupa las sesiones por su directorio de trabajo. Si lo lanzamos parados en

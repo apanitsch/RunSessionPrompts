@@ -518,6 +518,23 @@ Test-Case "el menu lista solo las series pendientes, en el orden propuesto, y sa
     Assert-Equal 'zeta-pendiente/01-a' (Get-ArgValue $s[0] '--name') "corrio la serie elegida"
 }
 
+Test-Case "un numero fuera del menu de series corta ahi mismo, no se toma como ruta" {
+    $f = New-Fixture
+    New-Serie $f 'unica' @{ '01-a.md' = 'a' } | Out-Null
+
+    # La [7] no existe: el menu tiene una sola serie. Antes esto se tomaba como una ruta pegada
+    # a mano, seguia preguntando desde-donde, modelo y effort, y recien al final decia que no
+    # existe la carpeta "7".
+    $r = Invoke-Runner $f @('-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) "7`n`n"
+
+    Assert-True ($r.ExitCode -ne 0) "tiene que cortar. Salida:`n$($r.Salida)"
+    Assert-Match "Valor invalido: '7'" $r.Salida "el error tiene que nombrar lo que se tipeo"
+    Assert-Match 'El menu va de 1 a 1' $r.Salida "y decir cual es el rango valido"
+    Assert-NotMatch 'No existe la carpeta' $r.Salida "no se toma como ruta"
+    Assert-NotMatch 'Empezar desde el numero' $r.Salida "no sigue preguntando lo que viene despues"
+    Assert-Equal 0 (@(Get-Sesiones $f)).Count "no lanza ninguna sesion"
+}
+
 Test-Case "-Todas muestra tambien las terminadas" {
     $f = New-Fixture
     New-Serie $f 'vieja-terminada' @{ '01-a.md' = 'a' } | Out-Null
@@ -712,6 +729,44 @@ Test-Case "sin series que correr, un Enter en la pregunta de la carpeta corta ah
     Assert-NotMatch 'Modelo:' $r.Salida "no puede seguir preguntando el modelo"
     Assert-NotMatch 'No existe la carpeta: *$' $r.Salida "ni morir con una ruta vacia"
     Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "-StartFrom mas grande que el ultimo prompt corta, y dice hasta donde llega la serie" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-corta' @{ '01-uno.md' = 'uno'; '02-dos.md' = 'dos' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '9', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "un numero de inicio que no deja nada para correr tiene que cortar"
+    Assert-Match 'No hay nada para correr desde el 9' $r.Salida "el error nombra el numero pedido"
+    Assert-Match "tiene 2 prompts y el ultimo es el 2" $r.Salida "y dice hasta donde llega la serie"
+    Assert-NotMatch 'No hay prompts .md para ejecutar' $r.Salida "no se confunde con una carpeta sin prompts"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "un numero de inicio entre dos prompts arranca en el siguiente que existe" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-salteada' @{ '01-uno.md' = 'uno'; '02-dos.md' = 'dos'; '05-cinco.md' = 'cinco' }
+
+    # El 3 no existe como prompt, pero no es un error: se pidio "desde el 3" y el 05 esta despues.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '3', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 1 $s.Count "corre solo el 05"
+    Assert-Equal 'serie-salteada/05-cinco' (Get-ArgValue $s[0] '--name') "y arranca en el 05"
+}
+
+Test-Case "el numero de inicio se valida ANTES de preguntar el modelo y el effort" {
+    $f = New-Fixture
+    New-Serie $f 'unica' @{ '01-a.md' = 'a'; '02-b.md' = 'b' } | Out-Null
+
+    # Serie [1] del menu, y despues un numero de inicio imposible. Sin -Model ni -Effort: si la
+    # validacion quedara para el final, el script preguntaria las dos cosas antes de cortar.
+    $r = Invoke-Runner $f @('-ClaudeCommand', $f.FakeClaude) "1`n9`n"
+    Assert-True ($r.ExitCode -ne 0) "tiene que cortar. Salida:`n$($r.Salida)"
+    Assert-Match 'No hay nada para correr desde el 9' $r.Salida "con el motivo"
+    Assert-NotMatch 'Modelo:' $r.Salida "no llega a preguntar el modelo"
+    Assert-NotMatch 'Effort:' $r.Salida "ni el effort"
 }
 
 Test-Case "-StartFrom negativo corta con un error, no se toma como 'desde el primero'" {

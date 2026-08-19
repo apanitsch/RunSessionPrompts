@@ -6,6 +6,25 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+### Corregido
+
+- **Un número que no está en el menú de series ya no se toma como una ruta.** Elegir la `[7]` cuando
+  el menú tiene tres series no daba error: el texto caía en la rama de "ruta pegada a mano",
+  `$PromptsPath` quedaba en `7`, el script seguía preguntando desde qué prompt empezar, el modelo y
+  el effort, y recién después cortaba con `No existe la carpeta: 7`. Ahora corta ahí mismo,
+  diciendo el rango válido (`El menu va de 1 a 3`). Los menús de modelo y de effort ya se
+  comportaban así.
+- **Un número de inicio posterior al último prompt corta antes de preguntar el modelo y el
+  effort, y dice hasta dónde llega la serie.** Empezar desde el `9` una serie que termina en el
+  `05` no deja nada para correr, pero eso se descubría tres preguntas después, y el error era
+  `No hay prompts .md para ejecutar en <carpeta> (StartFrom = 9)` — el mismo texto que sale
+  cuando la carpeta no tiene ningún prompt numerado, que se arregla de otra forma. Ahora corta
+  apenas se contesta, con `No hay nada para correr desde el 9` y la línea que dice qué tiene la
+  serie (`tiene 5 prompts y el ultimo es el 5: 05-cierre.md`). Que la carpeta no exista, o que no
+  tenga prompts, también se avisa ahí: antes esperaba hasta después de los menús.
+  - **Sin cambios en lo que se corre.** Un número de inicio que cae en un hueco sigue arrancando
+    en el siguiente que exista: `-StartFrom 3` en una serie `01`, `02`, `05` corre el `05`.
+
 ## [1.7.0] — 2026-08-19
 
 ### Cambiado
