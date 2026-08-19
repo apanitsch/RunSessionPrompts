@@ -1,5 +1,5 @@
 {
-  "_ayuda": "Configuracion opcional de Run-SessionPrompts.ps1. Lo que cambia de repo a repo se escribe una vez aca y no se vuelve a tipear. Precedencia: parametro explicito > este archivo > default del script. Borra las claves que no quieras fijar: sin ellas, el script pregunta (modelo, effort) o usa su default. Las claves desconocidas -- como esta -- se ignoran.",
+  "_ayuda": "Configuracion opcional de Run-SessionPrompts.ps1. Lo que cambia de repo a repo se escribe una vez aca y no se vuelve a tipear. Precedencia: parametro explicito > este archivo > default del script. Borra las claves que no quieras fijar, o dejalas en null: sin ellas, el script pregunta (modelo, effort) o usa su default. El runner VALIDA este archivo antes de arrancar: una clave que no reconoce, o un valor del tipo equivocado (true entre comillas, un numero como texto), corta con un error que dice cual. Las claves que empiezan con _ -- como esta -- son comentarios y se ignoran.",
 
   "_model": "'opus' o 'sonnet'. Si esta, el script no muestra el menu de modelo. null = preguntar.",
   "model": null,

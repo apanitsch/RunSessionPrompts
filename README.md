@@ -69,7 +69,7 @@ Si tenés el clon del producto a mano, el instalador de ahí instala **desde el 
 igual:
 
 ```bash
-pwsh -File C:\Users\andre\source\repos\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo
+pwsh -File C:\ruta\a\RunSessionPrompts\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiRepo
 ```
 
 ### Actualizar
@@ -92,9 +92,9 @@ El instalador no pisa nada que no haya puesto él:
 | --- | --- |
 | El runner es idéntico al que instaló | Lo actualiza sin preguntar |
 | El runner está **modificado a mano** | Avisa, muestra cómo diferenciarlo, y **no toca nada** (sale con código 2) |
-| Hay un runner **sin marca de versión** (copiado a mano, como los ocho originales) | Igual: avisa y no toca nada. Desde el runner: `-Update -Force` |
+| Hay un runner **sin marca de versión** (copiado a mano, de antes del instalador) | Igual: avisa y no toca nada. Desde el runner: `-Update -Force` |
 | Las series, el `series-estado.txt`, el `session-prompts.config.json` | **Nunca** se pisan |
-| Un `README.md` propio del repo (los ocho originales tienen el suyo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
+| Un `README.md` propio del repo (por ejemplo, con su índice de series) | Avisa y **no lo toca**; con `-Force` lo reemplaza dejando un `.bak` |
 
 Con `-Force` pisa igual, dejando un `.bak` al lado. Con `-WhatIf` dice qué haría y no toca nada.
 
@@ -261,6 +261,16 @@ aisladas, el modelo de siempre— se escribe una vez y no se vuelve a tipear. Pr
 **parámetro explícito > configuración > default del script**. El archivo de ejemplo
 ([`templates/session-prompts.config.json`](templates/session-prompts.config.json)) documenta cada
 clave.
+
+El runner lo **valida entero al arrancar**, contra la lista de claves que realmente mira
+(`model`, `effort`, `fullAuto`, `worktree`, `baseBranch`, `branchPrefix`, `worktreeRoot`,
+`checkForUpdates`, `claudeCommand`, `maxPromptChars`) y contra el tipo de cada una. Una clave
+desconocida corta con un error que la nombra y sugiere la parecida (`'modelo'. Quisiste decir
+'model'?`); un valor del tipo equivocado dice qué se esperaba (`true o false, sin comillas`). Salen
+todos los problemas juntos, no de a uno por corrida. Las claves que empiezan con `_` son comentarios
+y se ignoran: es lo que le permite al archivo de ejemplo documentarse a sí mismo.
+
+Un `null` es "no la fijo": vale para cualquier clave y es como viene la plantilla.
 
 ### Plantillas
 

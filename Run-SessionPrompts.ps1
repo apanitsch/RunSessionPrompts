@@ -447,6 +447,90 @@ function Import-RunnerConfig([string]$raiz) {
     }
 }
 
+# Lo que el archivo puede decir, con el tipo de cada clave. Es la lista completa: una clave
+# que no este aca es un error, no algo que se ignora. Un typo ('modelo' por 'model', 'worktrees'
+# por 'worktree') no cambia nada visible -- el script simplemente pregunta, o corre sin aislar --
+# y se descubre cuando ya corrio media serie donde no era.
+# Las claves que empiezan con '_' son comentarios de la propia plantilla y no se miran.
+$script:ConfigEsquema = [ordered]@{
+    'model'           = 'texto'
+    'effort'          = 'texto'
+    'fullAuto'        = 'booleano'
+    'worktree'        = 'booleano'
+    'baseBranch'      = 'texto'
+    'branchPrefix'    = 'texto'
+    'worktreeRoot'    = 'texto'
+    'checkForUpdates' = 'booleano'
+    'claudeCommand'   = 'texto'
+    'maxPromptChars'  = 'entero'
+}
+
+# La conocida mas parecida a una clave mal escrita, o $null. Alcanza con prefijo comun o
+# contencion: cubre 'modelo', 'Model ', 'worktrees', 'effor', que son los typos que pasan.
+function Get-ClaveParecida([string]$clave) {
+    $c = $clave.ToLowerInvariant()
+    foreach ($conocida in $script:ConfigEsquema.Keys) {
+        $k = $conocida.ToLowerInvariant()
+        if ($c.StartsWith($k) -or $k.StartsWith($c) -or $c.Contains($k) -or $k.Contains($c)) { return $conocida }
+    }
+    return $null
+}
+
+function Test-TipoDeConfig($valor, [string]$tipo) {
+    switch ($tipo) {
+        'texto'    { return ($valor -is [string]) }
+        'booleano' { return ($valor -is [bool]) }
+        'entero'   { return (($valor -is [int]) -or ($valor -is [long])) -and ([long]$valor -gt 0) }
+    }
+    return $false
+}
+
+# El archivo entero, de una: todos los problemas juntos y recien despues el corte. Corregir uno
+# por corrida, cada una con su error, es peor que verlos todos.
+function Test-RunnerConfig {
+    if ($null -eq $script:Config) { return }
+
+    $problemas = @()
+    foreach ($prop in $script:Config.PSObject.Properties) {
+        $clave = $prop.Name
+        if ($clave.StartsWith('_')) { continue }   # comentario de la plantilla
+
+        $conocida = @($script:ConfigEsquema.Keys | Where-Object { $_ -eq $clave })
+        if ($conocida.Count -eq 0) {
+            $parecida = Get-ClaveParecida $clave
+            $sugerencia = if ($parecida) { " Quisiste decir '$parecida'?" } else { "" }
+            $problemas += "clave desconocida: '$clave'.$sugerencia"
+            continue
+        }
+
+        # null = "no la fijo", que es como viene la plantilla. Siempre valido.
+        if ($null -eq $prop.Value) { continue }
+
+        $tipo = $script:ConfigEsquema[$conocida[0]]
+        if (-not (Test-TipoDeConfig $prop.Value $tipo)) {
+            # Un booleano de PowerShell se imprime 'True'; en el archivo se escribe 'true'.
+            $comoLlego = if ($prop.Value -is [string]) { "`"$($prop.Value)`"" }
+                         elseif ($prop.Value -is [bool]) { if ($prop.Value) { 'true' } else { 'false' } }
+                         else { [string]$prop.Value }
+            $esperado = switch ($tipo) {
+                'texto'    { 'un texto entre comillas' }
+                'booleano' { 'true o false, sin comillas' }
+                'entero'   { 'un numero entero mayor que cero, sin comillas' }
+            }
+            $problemas += "'$clave' = $comoLlego : tiene que ser $esperado."
+        }
+    }
+
+    if ($problemas.Count -gt 0) {
+        $titulo = if ($problemas.Count -eq 1) { "Hay un problema en" } else { "Hay $($problemas.Count) problemas en" }
+        Write-Host "$titulo $script:ConfigPath :" -ForegroundColor Red
+        foreach ($p in $problemas) { Write-Host "  - $p" -ForegroundColor Red }
+        Write-Host "Claves validas: $(($script:ConfigEsquema.Keys) -join ', ')." -ForegroundColor DarkGray
+        Write-Host "(Las que empiezan con '_' son comentarios y se ignoran.)" -ForegroundColor DarkGray
+        exit 1
+    }
+}
+
 # Lookup case-insensitive sobre el JSON. Devuelve $null si la clave no esta.
 function Get-ConfigValue([string]$nombre) {
     if ($null -eq $script:Config) { return $null }
@@ -522,6 +606,7 @@ function Resolve-SeriesRoot([string]$pedida) {
 
 $SeriesRoot = Resolve-SeriesRoot $SeriesRoot
 Import-RunnerConfig $SeriesRoot
+Test-RunnerConfig
 
 # Ahora que hay config, se resuelven los valores que salen de ella.
 $ClaudeCommand = Resolve-Setting 'claudeCommand' $ClaudeCommand 'claude'
@@ -530,6 +615,18 @@ $BaseBranch    = Resolve-Setting 'baseBranch'    $BaseBranch    ''
 $WorktreeRoot  = Resolve-Setting 'worktreeRoot'  $WorktreeRoot  ''
 $usaWorktree   = Resolve-SwitchSetting 'worktree' $PSBoundParameters.ContainsKey('Worktree') ([bool]$Worktree) $false
 $fullAuto      = Resolve-SwitchSetting 'fullAuto' $PSBoundParameters.ContainsKey('FullAuto') ([bool]$FullAuto) $false
+
+# Los tres parametros del worktree no hacen NADA si la serie no corre aislada. Pasarlos y que no
+# pase nada se lee como que se aplicaron: quien los paso cree que la serie va a salir de esa rama.
+# No es un error (el resto de la corrida es exactamente lo que se pidio), pero se dice.
+if (-not $usaWorktree) {
+    $sinEfecto = @('BaseBranch', 'BranchPrefix', 'WorktreeRoot') |
+        Where-Object { $PSBoundParameters.ContainsKey($_) }
+    if ($sinEfecto.Count -gt 0) {
+        $lista = ($sinEfecto | ForEach-Object { "-$_" }) -join ', '
+        Write-Host "$lista no se aplican sin -Worktree: la serie corre en el checkout donde estas." -ForegroundColor Yellow
+    }
+}
 
 # CreateProcess corta en 32767 caracteres TODA la linea de comandos: la ruta del ejecutable,
 # los flags, el nombre de la sesion y el prompt ya escapado. Por eso el corte NO se hace sobre
@@ -754,6 +851,13 @@ function Get-WorktreePaths([string]$repo) {
     [Environment]::Exit(130)
 })
 
+# El menu solo acepta digitos, pero por parametro se puede pasar un negativo: correrlo como si
+# fuera 0 seria hacer algo distinto de lo que se pidio, en silencio.
+if ($StartFrom -lt 0) {
+    Write-Host "-StartFrom no puede ser negativo (era $StartFrom). 0 o vacio = desde el primero." -ForegroundColor Red
+    exit 1
+}
+
 # --- Pedir por consola lo que no se haya pasado ---------------------------
 # Read-Host NO autocompleta con Tab (lee una linea cruda, sin PSReadLine). En vez de
 # pelear con eso, mostramos un menu con las series que hay: no hay que tipear el nombre.
@@ -783,6 +887,12 @@ if ([string]::IsNullOrWhiteSpace($PromptsPath)) {
             Write-Host "Una serie es una subcarpeta con prompts numerados (01-..., 02-...)." -ForegroundColor DarkGray
         }
         $PromptsPath = Read-Host "Carpeta con los prompts .md"
+        # Sin esto, un Enter deja $PromptsPath vacio, el script sigue preguntando modelo y
+        # effort, y recien despues corta con "No existe la carpeta: " (sin carpeta).
+        if ([string]::IsNullOrWhiteSpace($PromptsPath)) {
+            Write-Host "No elegiste ninguna carpeta." -ForegroundColor Red
+            exit 1
+        }
     } else {
         $titulo = if ($ocultas -gt 0) { "Series pendientes (en orden de ejecucion propuesta):" } else { "Series disponibles:" }
         Write-Host $titulo -ForegroundColor Cyan
@@ -828,10 +938,16 @@ $modelos = @(
     @{ Alias = 'sonnet'; Id = 'claude-sonnet-5'; Etiqueta = 'Sonnet 5' }
 )
 
-$Model = Resolve-Setting 'model' $Model ''
-if (-not [string]::IsNullOrWhiteSpace($Model) -and -not ($modelos.Alias -contains $Model)) {
-    Write-Host "Modelo desconocido en la configuracion: '$Model'. Validos: $($modelos.Alias -join ', ')." -ForegroundColor Red
-    exit 1
+# Ojo con el ValidateSet del parametro: PowerShell lo revalida en CADA asignacion a $Model, asi
+# que asignarle '' -- lo que devuelve Resolve-Setting cuando no hay ni parametro ni config --
+# aborta el script. Por eso se resuelve aparte y solo se asigna un alias ya valido.
+$modelPedido = Resolve-Setting 'model' $Model ''
+if (-not [string]::IsNullOrWhiteSpace($modelPedido)) {
+    if (-not ($modelos.Alias -contains $modelPedido)) {
+        Write-Host "Modelo desconocido en la configuracion: '$modelPedido'. Validos: $($modelos.Alias -join ', ')." -ForegroundColor Red
+        exit 1
+    }
+    $Model = $modelPedido
 }
 
 if ([string]::IsNullOrWhiteSpace($Model)) {
@@ -858,10 +974,14 @@ $modelo = $modelos | Where-Object { $_.Alias -eq $Model } | Select-Object -First
 # pasamos explicito igual: asi la corrida no depende de que el default no cambie.
 $efforts = @('high', 'low', 'medium', 'xhigh', 'max')
 
-$Effort = Resolve-Setting 'effort' $Effort ''
-if (-not [string]::IsNullOrWhiteSpace($Effort) -and -not ($efforts -contains $Effort)) {
-    Write-Host "Effort desconocido en la configuracion: '$Effort'. Validos: $($efforts -join ', ')." -ForegroundColor Red
-    exit 1
+# Mismo cuidado que con $Model: el ValidateSet del parametro se revalida en cada asignacion.
+$effortPedido = Resolve-Setting 'effort' $Effort ''
+if (-not [string]::IsNullOrWhiteSpace($effortPedido)) {
+    if (-not ($efforts -contains $effortPedido)) {
+        Write-Host "Effort desconocido en la configuracion: '$effortPedido'. Validos: $($efforts -join ', ')." -ForegroundColor Red
+        exit 1
+    }
+    $Effort = $effortPedido
 }
 
 if ([string]::IsNullOrWhiteSpace($Effort)) {
@@ -967,7 +1087,7 @@ function Get-ArgumentoEnLinea([string]$s) {
 # mismo prompt ocupa mucho mas y falla ya en 30000, porque cada '"' viaja como '\"'.
 #
 # O sea que el corte fijo de 30000 caracteres que este script traia se equivocaba en las dos
-# direcciones: rechazaba prompts de 31697 que entran (hay uno real en ChatNet) y aceptaba
+# direcciones: rechazaba prompts de 31697 que entran (hay casos reales) y aceptaba
 # prompts llenos de comillas que no entran.
 #
 # Cuando no entra, la falla es RUIDOSA ("The filename or extension is too long"), no un truncado

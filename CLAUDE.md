@@ -43,9 +43,9 @@ Dos objetivos, y todo cambio se juzga contra ellos:
 
 - **El modo de pasaje de argumentos se fija (`Standard`), no se adivina.** Bajo `pwsh` con un
   `claude.exe` nativo, PowerShell escapa solo y sumar escapado a mano **corrompe** cada `"` del
-  prompt. Medido cuatro veces: dos independientes en los repos de origen (ChatNet y AtlasVDT), y dos
-  acá contra un `.exe` nativo hecho para la prueba, la segunda con 21 payloads hostiles. El escapado
-  manual quedó **sólo** para PowerShell 7.0–7.2, donde `$PSNativeCommandArgumentPassing` no existe.
+  prompt. Medido cuatro veces: dos independientes en dos de las copias de origen, y dos acá contra
+  un `.exe` nativo hecho para la prueba, la segunda con 21 payloads hostiles. El escapado manual
+  quedó **sólo** para PowerShell 7.0–7.2, donde `$PSNativeCommandArgumentPassing` no existe.
 - **Un `claude` que resuelve a un shim `.cmd`/`.bat` no sirve, y el runner no arranca.** Medido: por
   ese camino un prompt multilínea llega truncado en su primera línea, en silencio. El runner primero
   busca el `.exe` equivalente; si no hay, corta. No lo «arregles» agregando escapado: son reglas de
@@ -54,17 +54,22 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   fijar el modo, aceptar el shim, escapar siempre y no escapar nunca ponen en rojo los casos que
   corresponden). Si tocás `Resolve-ComandoClaude`, `ConvertTo-NativeArg` o el bloque que fija el
   modo, corré la suite: es lo único que separa este script de degradar prompts en silencio.
-- **`-Worktree` es opcional y viene apagado.** Buspack lo hacía siempre; la mayoría de los repos no
-  lo necesita.
+- **`-Worktree` es opcional y viene apagado.** Una de las copias de origen lo hacía siempre; la
+  mayoría de los repos no lo necesita.
 - **Las carpetas que empiezan con `_` no son series**, aunque tengan prompts numerados adentro. Es lo
   que permite que `_serie-de-ejemplo` muestre el formato completo sin ensuciar el menú.
+- **El `session-prompts.config.json` se valida entero al arrancar**, contra la lista de claves que el
+  runner realmente mira y contra el tipo de cada una: una clave desconocida o un valor del tipo
+  equivocado cortan. La lista vive en `$script:ConfigEsquema` — si agregás una clave nueva, va ahí, o
+  el propio archivo de ejemplo deja de pasar la validación (hay un test que lo comprueba). Las claves
+  que empiezan con `_` son comentarios y se ignoran.
 - **El corte por tamaño es un error, no un truncado**, y **mide la línea de comandos completa**
   (ejecutable + flags + nombre de sesión + prompt escapado) contra el techo de Windows, no el largo
   crudo del prompt. Un número fijo se equivoca en las dos direcciones: está medido, y los dos casos
   aparecieron entre los prompts reales.
-- **Los 439 prompts reales de los ocho repos pasan por el runner y llegan byte a byte** (los tres
-  que no, superan el techo del sistema y hay que partirlos). El arnés que lo verifica no vive en
-  este repo: copia las series a un repo temporal y no toca los de origen.
+- **Los 439 prompts reales que existían cuando esto se unificó pasan por el runner y llegan byte a
+  byte** (los tres que no, superan el techo del sistema y hay que partirlos). El arnés que lo
+  verifica no vive en este repo: copia las series a un repo temporal y no toca los originales.
 
 ## 4. Estructura
 
@@ -103,9 +108,13 @@ El repo del producto es **público**, así que todo eso funciona sin credenciale
 que tienen el runner y el instalador queda por si alguna vez vuelve a ser privado, o para pasar el
 límite de la API anónima.
 
-## 6. Dónde está instalado
+## 6. Este repo no sabe dónde está instalado, y no tiene por qué
 
-Los ocho repos de origen (Agentada, AtlasVDT, Buspack, Chat, Chat-usuarios-meta, ChatNet,
-ncore-wingo, SRT.Kairos) todavía tienen **su copia vieja, sin marca de versión**. El instalador se
-niega a pisarlas sin `-Force`, a propósito: cada una puede tener algo propio. Migrarlas es una
-decisión de Andrés, repo por repo.
+El producto es independiente de los repos que lo usan: no hay acá una lista de instalaciones, ni
+nada que dependa de cómo esté armado un repo destino. Si hace falta saber qué versión tiene una
+instalación, se mira allá — en su `.session-prompts-version` — o se corre
+`Run-SessionPrompts.ps1 -Version`.
+
+Donde todavía haya una copia vieja, sin marca de versión, el instalador **se niega a pisarla sin
+`-Force`**, a propósito: puede tener algo propio. Migrar una copia así es una decisión de quien
+mantiene ese repo, no de este.

@@ -180,6 +180,12 @@ Lo que este repo fija por defecto: modelo, effort, permisos, si las series corre
 base de los worktrees. **La precedencia es: parámetro explícito > configuración > default del
 script.** El archivo trae cada clave documentada adentro.
 
+El runner **valida el archivo entero antes de arrancar**: una clave que no reconoce —un `"modelo"`
+donde va `"model"`— o un valor del tipo equivocado —`"true"` entre comillas donde va un booleano—
+corta con un error que las nombra a todas, y sugiere la clave parecida. Las que empiezan con `_` son
+comentarios y no se miran. Es a propósito: una clave mal escrita no cambia nada visible, y se
+descubre cuando ya corrió media serie con el modelo o el aislamiento que no era.
+
 ---
 
 ## Si algo hay que cambiar

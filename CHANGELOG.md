@@ -6,6 +6,56 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+### Cambiado
+
+- **El `session-prompts.config.json` se valida entero antes de arrancar.** Hasta ahora el runner
+  leía las claves que le interesaban y todo lo demás se ignoraba: un `"modelo"` donde va `"model"`,
+  o un `"worktree": "true"` con el booleano entre comillas, no cambiaba nada visible — el script
+  simplemente preguntaba el modelo, o corría sin aislar— y se descubría con media serie corrida
+  donde no era. Ahora una clave desconocida o un valor del tipo equivocado **cortan**, nombrando
+  todos los problemas juntos, sugiriendo la clave parecida (`'modelo'. Quisiste decir 'model'?`) y
+  diciendo qué se esperaba (`true o false, sin comillas`). Es el mismo criterio que ya tenían las
+  marcas `modelo-sugerido` y las líneas de `series-estado.txt`.
+  - Las claves que empiezan con `_` siguen siendo comentarios y no se miran: es lo que le permite al
+    archivo de ejemplo documentarse a sí mismo.
+  - `null` sigue queriendo decir "no la fijo", en cualquier clave.
+  - **Al actualizar:** si el `session-prompts.config.json` de un repo tiene una clave que el runner
+    no reconoce, la próxima corrida corta y la nombra. Se arregla borrándola, corrigiéndola, o
+    poniéndole un `_` adelante si era un comentario.
+- **`-BaseBranch`, `-BranchPrefix` y `-WorktreeRoot` pasados sin `-Worktree` avisan que no se
+  aplican**, en vez de no hacer nada. La corrida sigue igual: es exactamente lo que se pidió, pero
+  quien los pasó creía que la serie iba a salir de esa rama.
+- **`Install-SessionPrompts.ps1` con `-ReleaseZip` y `-FromRelease` a la vez dice cuál usa** y cuál
+  ignora, con su valor. Son dos orígenes distintos y sólo se usa uno; elegir en silencio deja a quien
+  lo corrió creyendo que instaló el release que nombró.
+
+### Corregido
+
+- **El menú de modelo y el de effort ya no abortan la corrida.** Sin `-Model` / `-Effort` y sin esas
+  claves en `session-prompts.config.json` —que es como viene la plantilla, con las dos en `null`—, el
+  script cortaba antes de mostrar el menú con `The variable cannot be validated because the value  is
+  not a valid value for the Model variable`. PowerShell revalida el `ValidateSet` del parámetro en
+  **cada** asignación a esa variable, y el script le asignaba el `''` que devuelve la resolución
+  cuando no hay ni parámetro ni configuración. Ahora el valor se resuelve en una variable aparte y a
+  `$Model` / `$Effort` sólo se le asigna un valor ya válido. Estaba desde la 1.0.0: todo repo que no
+  fijara modelo y effort en su configuración no podía correr una serie a mano.
+- Por el mismo motivo, **un modelo o un effort desconocido en la configuración ahora sí imprime su
+  error** (`Modelo desconocido en la configuracion: 'gpt'`) en vez de morir con el mensaje de
+  validación de PowerShell, que no dice de dónde salió el valor.
+- **Cuando no hay ninguna serie que correr, el script corta ahí.** Si el menú no tiene nada que
+  ofrecer —todas terminadas, o ninguna serie todavía— pregunta por una carpeta a mano; un Enter en
+  esa pregunta dejaba la carpeta vacía y el script **seguía**: preguntaba modelo, preguntaba effort,
+  y recién entonces moría con `No existe la carpeta: `, sin carpeta. Ahora dice
+  `No elegiste ninguna carpeta` y termina.
+- **`-StartFrom` negativo corta con un error** en vez de correr la serie entera desde el primer
+  prompt. El menú sólo acepta dígitos, pero por parámetro entraba cualquier cosa: empezar en `-3` no
+  es lo mismo que empezar en el primero, y hacerlo igual, sin decir nada, es justo lo que este
+  script no hace.
+- **`Install-SessionPrompts.ps1 -ClaudeCommand ''` ya no revienta al final.** El vacío ahora se
+  toma como "no me lo pasaron" —el default `claude`—, igual que en el runner. Antes instalaba todo
+  bien y después cortaba con un `Cannot validate argument on parameter 'Name'` de PowerShell,
+  saliendo con código 1 sobre una instalación que en realidad había salido bien.
+
 ## [1.6.0] — 2026-08-19
 
 ### Cambiado
@@ -37,8 +87,8 @@ el [README](README.md#versionado-y-releases).
 
 ### Nota
 
-- El formato no cambió. Los `series-estado.txt` que ya existen —Agentada (2 series) y ChatNet (56)—
-  se leen sin una sola queja: verificado pasando los dos archivos reales por el runner nuevo.
+- El formato no cambió. Los `series-estado.txt` que ya existen se leen sin una sola queja:
+  verificado pasando dos archivos reales, de 2 y de 56 series, por el runner nuevo.
 
 ## [1.5.0] — 2026-08-18
 
@@ -140,8 +190,8 @@ lo encuentra; y si el repo venía de una copia vieja, lo que ahí dice puede ser
 
 ## [1.2.1] — 2026-08-18
 
-Salió de pasar los **439 prompts reales** de los ocho repos de origen por el runner, contra el
-`.exe` de prueba. **436 llegaron byte a byte.** Los otros tres no los corrió el runner: pesan
+Salió de pasar los **439 prompts reales** que existían cuando esto se unificó por el runner, contra
+el `.exe` de prueba. **436 llegaron byte a byte.** Los otros tres no los corrió el runner: pesan
 35201, 40023 y 45712 caracteres, o sea que están por encima del techo de Windows (32767 para toda
 la línea de comandos) y hay que partirlos. Eso no tiene arreglo posible del lado del script.
 
@@ -151,8 +201,7 @@ la línea de comandos) y hay que partirlos. Eso no tiene arreglo posible del lad
   nombre de la sesión y prompt ya escapado— contra el techo real de Windows, en vez de comparar el
   largo crudo del prompt contra un 30000 fijo. Ese número se equivocaba **en las dos direcciones**,
   y las dos aparecieron midiendo:
-  - rechazaba `ChatNet/canal-olark/01-informe-spike-xmpp.md`, de 31697 caracteres, que entra
-    perfectamente (medido: con texto plano entra un prompt de 32500 y falla uno de 32600);
+  - rechazaba un prompt real de 31697 caracteres, que entra perfectamente (medido: con texto plano entra un prompt de 32500 y falla uno de 32600);
   - habría aceptado un prompt bastante más corto pero lleno de comillas, que no entra: cada `"`
     viaja como `\"`, así que 22000 caracteres de `"a"` ocupan casi el doble.
 
@@ -250,9 +299,8 @@ Sin cambios de comportamiento: lo que cambia es cuánto de esto está *verificad
 
 ## [1.0.0] — 2026-08-18
 
-Primera versión con control de cambios. Es la **suma** de las ocho copias que vivían en
-`docs/session-prompts/` de Agentada, AtlasVDT, Buspack, Chat, Chat-usuarios-meta, ChatNet,
-ncore-wingo y SRT.Kairos. Qué aportó cada una está en
+Primera versión con control de cambios. Es la **suma** de las ocho copias que vivían, divergiendo,
+en la carpeta `docs/session-prompts/` de otros tantos repositorios. Qué aportó cada una está en
 [`docs/analisis-de-versiones.md`](docs/analisis-de-versiones.md).
 
 ### Agregado
@@ -291,9 +339,9 @@ Un repo que ya tenga su copia del script sigue funcionando igual: la copia unifi
 parámetros que aceptaba cualquiera de las ocho, con los mismos defaults. Las dos diferencias a mirar
 antes de actualizar:
 
-- **`-Worktree` es opcional y viene apagado.** Buspack lo hacía siempre y con la rama base fija en
-  `Features-TMS`. Para reproducir ese comportamiento: `"worktree": true` y
-  `"baseBranch": "Features-TMS"` en el `session-prompts.config.json` del repo.
+- **`-Worktree` es opcional y viene apagado.** Una de las copias lo hacía siempre, y con la rama
+  base escrita en el código. Para reproducir ese comportamiento: `"worktree": true` y
+  `"baseBranch": "<la rama>"` en el `session-prompts.config.json` del repo.
 - **Las carpetas que empiezan con `_` ya no son series**, en todos los repos. Si alguno tenía una
   serie ejecutable con nombre así, hay que renombrarla.
 

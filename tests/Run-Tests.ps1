@@ -647,6 +647,146 @@ Test-Case "un parametro explicito le gana a la configuracion" {
     Assert-Equal 'low' (Get-ArgValue $s[0] '--effort') "lo que no se paso sale de la configuracion"
 }
 
+Test-Case "sin -Model ni -Effort ni configuracion, los menus se muestran y Enter toma el default" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-menu' @{ '01-uno.md' = 'x' }
+
+    # Enter en el menu de modelo y Enter en el de effort. Es el camino de la corrida a mano:
+    # el ValidateSet de los parametros se revalida en cada asignacion, asi que resolver el
+    # valor "no hay nada configurado" adentro de $Model / $Effort aborta el script.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-ClaudeCommand', $f.FakeClaude) "`n`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'cannot be validated' $r.Salida "el menu no puede morir validando la variable"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'claude-opus-5' (Get-ArgValue $s[0] '--model') "Enter = Opus 5"
+    Assert-Equal 'high' (Get-ArgValue $s[0] '--effort') "Enter = high"
+}
+
+Test-Case "la configuracion de la plantilla, con modelo y effort en null, tambien pregunta" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-nulls' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "model": null, "effort": null }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-ClaudeCommand', $f.FakeClaude) "`n`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'claude-opus-5' (Get-ArgValue $s[0] '--model') "una clave en null es como si no estuviera"
+}
+
+Test-Case "un modelo desconocido en la configuracion corta con un error que lo nombra" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-modelo-raro' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "model": "gpt" }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "no puede arrancar con un modelo que no existe"
+    Assert-Match "Modelo desconocido en la configuracion: 'gpt'" $r.Salida "el error tiene que nombrar el valor"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "un effort desconocido en la configuracion corta con un error que lo nombra" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-effort-raro' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "effort": "altisimo" }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "no puede arrancar con un effort que no existe"
+    Assert-Match "Effort desconocido en la configuracion: 'altisimo'" $r.Salida "el error tiene que nombrar el valor"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "sin series que correr, un Enter en la pregunta de la carpeta corta ahi mismo" {
+    $f = New-Fixture
+    New-Serie $f 'serie-cerrada' @{ '01-uno.md' = 'x' } | Out-Null
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'series-estado.txt') -Encoding UTF8 `
+        -Value 'terminada - serie-cerrada   # cerrada 2026-08-01'
+
+    # Enter en "Carpeta con los prompts .md". Sin el corte, el script seguia preguntando modelo y
+    # effort y recien ahi moria con "No existe la carpeta: " (sin carpeta).
+    $r = Invoke-Runner $f @('-ClaudeCommand', $f.FakeClaude) "`n`n`n"
+    Assert-True ($r.ExitCode -ne 0) "no hay nada que correr"
+    Assert-Match 'No hay series pendientes' $r.Salida "primero avisa que estan todas terminadas"
+    Assert-Match 'No elegiste ninguna carpeta' $r.Salida "y corta ahi, con un motivo"
+    Assert-NotMatch 'Modelo:' $r.Salida "no puede seguir preguntando el modelo"
+    Assert-NotMatch 'No existe la carpeta: *$' $r.Salida "ni morir con una ruta vacia"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "-StartFrom negativo corta con un error, no se toma como 'desde el primero'" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-negativa' @{ '01-uno.md' = 'uno'; '02-dos.md' = 'dos' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '-3', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "un numero de inicio imposible no puede reinterpretarse"
+    Assert-Match '-StartFrom no puede ser negativo' $r.Salida "el error tiene que decir que pasa"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "una clave desconocida en la configuracion corta, y sugiere la que quiso escribir" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-typo' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 `
+        -Value '{ "modelo": "sonnet", "cualquiera": 1 }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "una clave que el script no mira no puede pasar como si nada"
+    Assert-Match "clave desconocida: 'modelo'" $r.Salida "tiene que nombrar la clave"
+    Assert-Match "Quisiste decir 'model'" $r.Salida "y sugerir la parecida"
+    Assert-Match "clave desconocida: 'cualquiera'" $r.Salida "todas las que haya, no solo la primera"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "un valor con el tipo equivocado en la configuracion corta, diciendo que se esperaba" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-tipos' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 `
+        -Value '{ "worktree": "true", "maxPromptChars": "1000", "model": 5 }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-True ($r.ExitCode -ne 0) "un true entre comillas no es un booleano"
+    Assert-Match "'worktree'" $r.Salida "nombra la clave booleana"
+    Assert-Match 'true o false, sin comillas' $r.Salida "y dice como se escribe"
+    Assert-Match "'maxPromptChars'" $r.Salida "nombra la clave numerica"
+    Assert-Match "'model'" $r.Salida "nombra la clave de texto"
+    Assert-Match '3 problemas' $r.Salida "los tres juntos, no de a uno por corrida"
+}
+
+Test-Case "las claves que empiezan con _ son comentarios y no molestan" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-comentada' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 `
+        -Value '{ "_ayuda": "lo que sea", "_model": "texto de ayuda", "model": "sonnet", "effort": null }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Equal 'claude-sonnet-5' (Get-ArgValue (Get-Sesiones $f)[0] '--model') "la clave de verdad se sigue leyendo"
+}
+
+Test-Case "la configuracion que instala el instalador pasa su propia validacion" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-plantilla' @{ '01-uno.md' = 'x' }
+    $plantilla = Join-Path (Split-Path -Parent $PSScriptRoot) 'templates\session-prompts.config.json'
+    Copy-Item -LiteralPath $plantilla -Destination (Join-Path $f.SeriesRoot 'session-prompts.config.json')
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "la plantilla no puede quedar en rojo contra el validador. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "y la corrida sale normal"
+}
+
+Test-Case "-BaseBranch, -BranchPrefix y -WorktreeRoot sin -Worktree avisan que no se aplican" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-wt' @{ '01-uno.md' = 'x' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-BaseBranch', 'main', '-WorktreeRoot', 'Z:\nada', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "avisar no es cortar: la corrida es la que se pidio. Salida:`n$($r.Salida)"
+    Assert-Match '-BaseBranch, -WorktreeRoot no se aplican sin -Worktree' $r.Salida "tiene que nombrar los que se pasaron"
+    Assert-NotMatch '-BranchPrefix' $r.Salida "y solo esos"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la sesion corre igual"
+}
+
 Test-Case "-Worktree crea el worktree de la serie y corre las sesiones adentro" {
     $f = New-Fixture
     $serie = New-Serie $f 'serie-aislada' @{ '01-uno.md' = 'uno' }
@@ -1199,6 +1339,31 @@ Test-Case "la instalacion lanza una sesion de Claude con el prompt del CLAUDE.md
     Assert-Match ([regex]::Escape((Join-Path $repo 'docs\session-prompts\README.md'))) $prompt "con la ruta real del README instalado"
 }
 
+Test-Case "el instalador con -ClaudeCommand vacio usa el default, no revienta al final" {
+    $repo = New-RepoVacio
+
+    # PATH minimo (solo el directorio de pwsh): asi 'claude' no resuelve en ninguna maquina y el
+    # paso del CLAUDE.md se saltea limpio, sin lanzar nada. Lo que se prueba es que el vacio se
+    # toma como "no me lo pasaron": antes, Get-Command reventaba con un error de binding DESPUES
+    # de haber instalado todo, y la instalacion terminaba en rojo.
+    $pathViejo = $env:PATH
+    $minimo = @(
+        (Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)),
+        (Split-Path -Parent (Get-Command git).Source)   # el instalador necesita git
+    )
+    $env:PATH = ($minimo -join ';')
+    try {
+        $r = Invoke-Instalador $repo @('-ClaudeCommand', '')
+    } finally {
+        $env:PATH = $pathViejo
+    }
+
+    Assert-Equal 0 $r.ExitCode "instalar tiene que terminar bien. Salida:`n$($r.Salida)"
+    Assert-True (Test-Path -LiteralPath (Join-Path $repo 'docs\session-prompts\Run-SessionPrompts.ps1')) "el runner se instala igual"
+    Assert-Match "No encontre 'claude'" $r.Salida "el vacio se toma como el default, y el paso se saltea con su motivo"
+    Assert-NotMatch 'Cannot validate argument' $r.Salida "no puede salir un error de binding de PowerShell"
+}
+
 Test-Case "-SkipClaudeMd no lanza ninguna sesion" {
     Initialize-EcoExe
     if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
@@ -1267,6 +1432,18 @@ Test-Case "-FromRelease sin poder averiguar el tag corta con un error que dice q
     Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
     Assert-Match 'No pude averiguar cual es el ultimo release' $r.Salida "con el motivo"
     Assert-Match '-FromRelease v1\.2\.3' $r.Salida "y con la salida a mano"
+}
+
+Test-Case "-ReleaseZip junto con -FromRelease avisa cual de los dos origenes usa" {
+    $repo = New-RepoVacio
+    $rel = New-ReleaseFalso '9.9.9'
+
+    $r = Invoke-Instalador $repo @('-FromRelease', 'v1.0.0', '-ReleaseZip', $rel.Zip)
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'uso el zip' $r.Salida "tiene que decir cual gano"
+    Assert-Match 'ignoro -FromRelease v1.0.0' $r.Salida "y cual ignoro, con su valor"
+    Assert-True (Test-Path -LiteralPath (Join-Path $repo 'docs\session-prompts\Run-SessionPrompts.ps1')) "instala igual"
 }
 
 Test-Case "el runner -Update baja el release y lo instala en su repo" {
@@ -1476,7 +1653,7 @@ Test-Case "el formato que ya usan los repos existentes se lee sin quejas" {
     New-Serie $f 'serie-cerrada' @{ '01-uno.md' = 'x' } | Out-Null
     New-Serie $f 'serie-cerrada-sin-fecha' @{ '01-uno.md' = 'x' } | Out-Null
 
-    # Las tres formas que aparecen en los series-estado.txt reales de Agentada y ChatNet.
+    # Las tres formas que aparecen en los series-estado.txt reales.
     Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'series-estado.txt') -Encoding UTF8 -Value @(
         '# comentario, y una linea vacia abajo',
         '',

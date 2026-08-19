@@ -71,7 +71,7 @@
 
 .EXAMPLE
     # Instalar en otro repo.
-    .\Install-SessionPrompts.ps1 -Repo C:\Users\andre\source\repos\MiProyecto
+    .\Install-SessionPrompts.ps1 -Repo C:\ruta\a\MiProyecto
 
 .EXAMPLE
     # Ver que haria una actualizacion, sin tocar nada.
@@ -127,10 +127,19 @@ if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
 
     $zip = $ReleaseZip
 
+    # Los dos a la vez son dos origenes distintos y solo se usa uno. Elegir en silencio deja a
+    # quien lo corrio creyendo que instalo el release que nombro.
+    if ($ReleaseZip -and $FromRelease) {
+        Write-Host "-ReleaseZip y -FromRelease son dos origenes: uso el zip ($ReleaseZip) e ignoro -FromRelease $FromRelease." -ForegroundColor Yellow
+    }
+
     # Mismo override que el runner: un zip ya bajado, para una maquina sin salida a internet
     # (y para poder probar todo esto sin red).
     if (-not $zip -and -not [string]::IsNullOrWhiteSpace($env:SESSION_PROMPTS_RELEASE_ZIP)) {
         $zip = $env:SESSION_PROMPTS_RELEASE_ZIP
+        if ($FromRelease) {
+            Write-Host "Uso el zip de SESSION_PROMPTS_RELEASE_ZIP ($zip) e ignoro -FromRelease $FromRelease." -ForegroundColor Yellow
+        }
     }
 
     if (-not $zip) {
@@ -232,6 +241,10 @@ if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
     }
     exit $code
 }
+
+# Un -ClaudeCommand vacio es "no me lo pasaron", igual que en el runner: sin esto, Get-Command
+# revienta con un error de binding de PowerShell DESPUES de haber instalado todo.
+if ([string]::IsNullOrWhiteSpace($ClaudeCommand)) { $ClaudeCommand = 'claude' }
 
 $origen = $PSScriptRoot
 $runnerOrigen = Join-Path $origen 'Run-SessionPrompts.ps1'
