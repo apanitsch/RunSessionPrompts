@@ -773,6 +773,70 @@ Test-Case "el instalador se niega a pisar un runner modificado a mano" {
     Assert-True ($antes -ne (Get-FileHash -LiteralPath $runner).Hash) "con -Force tiene que actualizarlo"
 }
 
+Test-Case "un checkout con autocrlf no convierte al runner ni al README en modificados" {
+    # El repo destino tipico de Windows: core.autocrlf=true y ningun .gitattributes, que es el
+    # default de Git for Windows. Al hacer checkout, git reescribe los finales de linea. El
+    # contenido es el mismo -- y al runner no le afecta, ni siquiera lee el README -- pero los
+    # bytes cambian. Con el hash de los bytes, cualquier clon nuevo del destino frenaba la
+    # actualizacion con exit 2 y dejaba de actualizar el README en silencio.
+    $repo = New-RepoVacio
+    git -C $repo config core.autocrlf true
+    Invoke-Instalador $repo @() | Out-Null
+
+    $destino = Join-Path $repo 'docs\session-prompts'
+    $runner  = Join-Path $destino 'Run-SessionPrompts.ps1'
+    $readme  = Join-Path $destino 'README.md'
+
+    git -C $repo add -A 2>&1 | Out-Null
+    git -C $repo commit -qm "andamiaje" 2>&1 | Out-Null
+
+    # Un clon nuevo, o cualquier checkout: git reescribe el archivo desde el indice.
+    Remove-Item -LiteralPath $runner, $readme -Force
+    git -C $repo checkout -- . 2>&1 | Out-Null
+
+    $eranCrLf = ((Get-Content -LiteralPath $runner -Raw) -match "`r`n") -and
+                ((Get-Content -LiteralPath $readme -Raw) -match "`r`n")
+    if (-not $eranCrLf) { Skip-Case "el git de esta maquina no convirtio a CRLF con autocrlf=true" }
+
+    $r = Invoke-Instalador $repo @()
+    Assert-Equal 0 $r.ExitCode "un cambio de finales de linea no puede frenar la actualizacion. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'MODIFICADO'     $r.Salida "el runner no lo toco nadie"
+    Assert-NotMatch 'ya tiene uno propio' $r.Salida "el README lo puso este instalador"
+    Assert-Match    'sin modificar'  $r.Salida "tiene que reconocerlo como suyo"
+}
+
+Test-Case "una marca vieja, con el hash de los bytes, sigue reconociendo lo que instalo" {
+    # Las marcas de 1.6.0 y anteriores guardan el hash de los BYTES. Si el archivo instalado tenia
+    # CRLF -- como el runner que viene en el zip del release -- ese hash no coincide con el del
+    # contenido normalizado, y sin la compatibilidad hacia atras la primera corrida del instalador
+    # nuevo veria como modificado todo lo que dejo el viejo.
+    $repo = New-RepoVacio
+    Invoke-Instalador $repo @() | Out-Null
+
+    $destino = Join-Path $repo 'docs\session-prompts'
+    $runner  = Join-Path $destino 'Run-SessionPrompts.ps1'
+    $readme  = Join-Path $destino 'README.md'
+    $marca   = Join-Path $destino '.session-prompts-version'
+
+    foreach ($f in @($runner, $readme)) {
+        $texto = [System.IO.File]::ReadAllText($f) -replace "`r`n", "`n" -replace "`n", "`r`n"
+        [System.IO.File]::WriteAllText($f, $texto)
+    }
+
+    # La marca como la escribia el instalador viejo: hash de los bytes, y sin el campo hashDe.
+    $vieja = Get-Content -LiteralPath $marca -Raw -Encoding UTF8 | ConvertFrom-Json
+    $vieja.runnerHash = (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash
+    $vieja.readmeHash = (Get-FileHash -LiteralPath $readme -Algorithm SHA256).Hash
+    $sinHashDe = $vieja | Select-Object -Property * -ExcludeProperty hashDe
+    Set-Content -LiteralPath $marca -Value ($sinHashDe | ConvertTo-Json) -Encoding UTF8
+
+    $r = Invoke-Instalador $repo @()
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'MODIFICADO'          $r.Salida "la marca vieja tiene que seguir valiendo"
+    Assert-NotMatch 'ya tiene uno propio' $r.Salida "el README tambien"
+    Assert-Match    'hashDe' (Get-Content -LiteralPath $marca -Raw -Encoding UTF8) "y la marca queda reescrita en el formato nuevo"
+}
+
 Test-Case "effort-sugerido menor o igual que el tope se usa sin preguntar" {
     $f = New-Fixture
     $serie = New-Serie $f 'serie-effort' @{

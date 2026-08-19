@@ -20,6 +20,22 @@ el [README](README.md#versionado-y-releases).
 - La validación corre al arrancar, no al abrir el menú: con `-PromptsPath` el menú no se abre, pero
   el archivo igual se reescribe al cerrar la serie.
 
+### Corregido
+
+- **Un checkout normal del repo destino ya no hace pasar el andamiaje por "modificado a mano".** El
+  instalador reconoce lo que instaló comparando un hash contra el que dejó anotado en
+  `.session-prompts-version`, y ese hash era de los **bytes**. Si el repo destino tiene
+  `core.autocrlf=true` y no tiene `.gitattributes` —el default de Git for Windows— git reescribe los
+  finales de línea al hacer checkout: el contenido es idéntico, el runner ni se entera (no lee el
+  README), pero los bytes cambian. Verificado end to end: instalar, commitear y clonar alcanzaba
+  para que la actualización siguiente cortara con `el runner del destino esta MODIFICADO` y
+  `exit 2`, y para que el README dejara de actualizarse por `el destino ya tiene uno propio` —
+  o sea, **en silencio**. Ahora el hash es del contenido con los finales de línea normalizados
+  (y sin BOM), así que un cambio de checkout no cuenta como edición y una edición de verdad se
+  sigue detectando igual.
+- Las marcas que escribieron las versiones anteriores —hash de los bytes— se siguen aceptando, y la
+  marca queda reescrita en el formato nuevo, que ahora dice `"hashDe": "contenido"`.
+
 ### Nota
 
 - El formato no cambió. Los `series-estado.txt` que ya existen —Agentada (2 series) y ChatNet (56)—

@@ -15,7 +15,9 @@
     de versiones viejas del script. El prompt de esa sesion es
     templates/prompt-instalacion-claude-md.md, y se puede editar.
 
-    Deja un archivo .session-prompts-version con la version instalada y el hash del runner.
+    Deja un archivo .session-prompts-version con la version instalada y el hash del runner (del
+    contenido, con los finales de linea normalizados: el checkout del repo destino puede cambiar
+    CRLF por LF sin que nadie haya editado nada).
     Con eso, una actualizacion posterior puede distinguir tres situaciones:
       - el runner del destino es identico al que instalamos  -> se pisa sin preguntar,
       - esta MODIFICADO a mano                               -> avisa y no pisa (salvo -Force),
@@ -299,8 +301,34 @@ Write-Host ""
 $marcaPath = Join-Path $SeriesRoot '.session-prompts-version'
 $runnerDestino = Join-Path $SeriesRoot 'Run-SessionPrompts.ps1'
 
+# El hash con el que se reconoce un archivo como "el que instalamos nosotros" se calcula sobre el
+# CONTENIDO con los finales de linea normalizados (CRLF y CR sueltos -> LF), no sobre los bytes
+# crudos. El motivo esta medido: si el repo destino tiene core.autocrlf=true y no tiene un
+# .gitattributes -- que es el default de Git for Windows -- git reescribe los finales de linea al
+# hacer checkout. El archivo instalado queda identico en contenido, y al runner no le afecta (ni
+# siquiera lee el README), pero el hash crudo cambia. Con hash crudo, en cualquier clon nuevo del
+# repo destino la actualizacion se frenaba con "el runner esta MODIFICADO" (exit 2) y el README
+# dejaba de actualizarse por "el destino ya tiene uno propio", sin que nadie hubiera tocado nada.
 function Get-HashArchivo([string]$path) {
-    return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    $abs = (Get-Item -LiteralPath $path).FullName
+    # ReadAllText detecta y descarta el BOM: un archivo reguardado con BOM tampoco es una edicion.
+    $texto = [System.IO.File]::ReadAllText($abs)
+    $texto = $texto -replace "`r`n", "`n" -replace "`r", "`n"
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($texto))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '')
+    } finally { $sha.Dispose() }
+}
+
+# Un archivo del destino es "nuestro" si su hash coincide con el que quedo anotado en la marca.
+# Las marcas escritas por 1.6.0 y anteriores guardan el hash de los BYTES, asi que ese tambien se
+# acepta: si no, la primera corrida del instalador nuevo veria como modificado todo lo que instalo
+# el viejo. La marca se reescribe con el hash de contenido, y a partir de ahi es uno solo.
+function Test-EsElNuestro([string]$path, [string]$hashGuardado) {
+    if ([string]::IsNullOrWhiteSpace($hashGuardado)) { return $false }
+    if ($hashGuardado -eq (Get-HashArchivo $path)) { return $true }
+    return $hashGuardado -eq (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 }
 
 $puedePisar = $true
@@ -316,9 +344,8 @@ if (Test-Path -LiteralPath $marcaPath) {
 if (-not $esInstalacionNueva) {
     if ($marcaPrevia) {
         $marca = $marcaPrevia
-        $hashActual = Get-HashArchivo $runnerDestino
 
-        if ($marca.runnerHash -eq $hashActual) {
+        if (Test-EsElNuestro $runnerDestino $marca.runnerHash) {
             $motivo = "instalado por este instalador, version $($marca.version), sin modificar"
             if ($marca.version -eq $versionOrigen) { $motivo += " (ya esta en $versionOrigen)" }
         } else {
@@ -377,8 +404,7 @@ if (Test-Path -LiteralPath $readmeOrigen) {
     $motivoReadme = 'nuevo'
 
     if (Test-Path -LiteralPath $readmeDestino) {
-        $hashActualReadme = Get-HashArchivo $readmeDestino
-        if ($marcaPrevia -and $marcaPrevia.readmeHash -eq $hashActualReadme) {
+        if ($marcaPrevia -and (Test-EsElNuestro $readmeDestino $marcaPrevia.readmeHash)) {
             $motivoReadme = 'lo habia puesto este instalador, sin modificar'
         } elseif ($Force) {
             $motivoReadme = 'propio del repo, pisado por -Force'
@@ -433,6 +459,9 @@ foreach ($par in @(
 if ($PSCmdlet.ShouldProcess($marcaPath, "escribir la marca de version")) {
     $marca = [pscustomobject]@{
         version     = $versionOrigen
+        # Hash del contenido con finales de linea normalizados (ver Get-HashArchivo), no de los
+        # bytes: el checkout del repo destino puede cambiar los bytes sin cambiar nada.
+        hashDe      = 'contenido'
         runnerHash  = Get-HashArchivo $runnerDestino
         readmeHash  = $readmeHashParaMarca
         instaladoEl = (Get-Date).ToString('yyyy-MM-dd')

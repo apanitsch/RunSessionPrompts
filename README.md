@@ -51,7 +51,7 @@ convención):
 | `_plantillas/` | los moldes de una serie y de un prompt |
 | `series-estado.txt` | qué series están pendientes y en qué orden (sólo la primera vez) |
 | `session-prompts.config.json` | lo que ese repo fija por defecto (sólo la primera vez) |
-| `.session-prompts-version` | versión y hashes de lo instalado |
+| `.session-prompts-version` | versión y hashes de lo instalado (del **contenido**, con los finales de línea normalizados: el checkout del repo destino puede cambiar CRLF por LF sin que nadie haya editado nada) |
 
 Y después **lanza una sesión de Claude Code en el repo destino** para dejar el andamiaje
 descubrible: que el `CLAUDE.md` de ese repo lo nombre, diga para qué sirve, cómo se corre y que la
