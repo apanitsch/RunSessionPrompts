@@ -113,6 +113,16 @@ $script:RepoGitHub = 'apanitsch/RunSessionPrompts'
 # asi que se baja -- por eso el caso normal no necesita ningun parametro.
 $productoAlLado = Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Run-SessionPrompts.ps1')
 
+# Un pedido HTTP que fallo, fallo por que? Que el servidor haya contestado 404 o 403 no es lo
+# mismo que no haber llegado a ningun servidor, y es lo unico que decide si reintentar con 'gh'
+# sirve para algo: con respuesta, 'gh' usa la credencial del usuario y puede contestar lo que la
+# API anonima no; sin respuesta no hay red, y 'gh' va a fallar igual -- pero tardando, porque no
+# tiene con que acotarse (21 segundos contra una red que traga los paquetes, medido). La misma
+# funcion, con la explicacion larga, esta en el runner.
+function Test-HuboRespuestaHttp($errorRecord) {
+    return ($null -ne $errorRecord.Exception.Response)
+}
+
 if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
     # Cinturon contra un lazo infinito: si el zip bajado no trajera el producto, el instalador
     # de adentro volveria a bajar, y asi para siempre.
@@ -150,14 +160,18 @@ if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
             $fuente = $env:SESSION_PROMPTS_RELEASES_URL
             if ([string]::IsNullOrWhiteSpace($fuente)) { $fuente = "https://api.github.com/repos/$script:RepoGitHub/releases/latest" }
 
+            $huboRespuesta = $false
             try {
                 if ($fuente -notmatch '^https?://') {
                     $json = Get-Content -LiteralPath $fuente -Raw -Encoding UTF8 | ConvertFrom-Json
                 } else {
                     $json = Invoke-RestMethod -Uri $fuente -TimeoutSec 10 -Headers @{ 'User-Agent' = 'Install-SessionPrompts' }
                 }
+                $huboRespuesta = $true
                 $tag = [string]$json.tag_name
-            } catch { }
+            } catch {
+                $huboRespuesta = Test-HuboRespuestaHttp $_
+            }
 
             # Si no se pudo por HTTP, 'gh' usa la credencial del usuario (sirve si el repo
             # vuelve a ser privado, o para pasar el limite de la API anonima).
@@ -165,7 +179,7 @@ if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
             # SOLO cuando el origen es el de siempre: si alguien apunto a un mirror o a un
             # archivo, caer a GitHub instalaria un release DISTINTO del que pidio, y en
             # silencio.
-            if (-not $tag -and $fuente -match '^https?://api\.github\.com') {
+            if (-not $tag -and $huboRespuesta -and $fuente -match '^https?://api\.github\.com') {
                 $gh = Get-Command gh -ErrorAction SilentlyContinue
                 if ($gh) {
                     $salida = & $gh.Source api "repos/$script:RepoGitHub/releases/latest" 2>$null
@@ -186,12 +200,17 @@ if ($FromRelease -or $ReleaseZip -or -not $productoAlLado) {
         Write-Host "Bajando el release $tag de $script:RepoGitHub..." -ForegroundColor Cyan
         $zip = Join-Path ([System.IO.Path]::GetTempPath()) "run-session-prompts-$tag.zip"
         $bajado = $false
+        $huboRespuesta = $false
         try {
             Invoke-WebRequest -Uri "https://github.com/$script:RepoGitHub/archive/refs/tags/$tag.zip" -OutFile $zip -TimeoutSec 120 -Headers @{ 'User-Agent' = 'Install-SessionPrompts' }
+            $huboRespuesta = $true
             $bajado = Test-Path -LiteralPath $zip
-        } catch { }
+        } catch {
+            $huboRespuesta = Test-HuboRespuestaHttp $_
+        }
 
-        if (-not $bajado) {
+        # Mismo criterio que arriba: sin red, 'gh' no tiene nada que agregar.
+        if (-not $bajado -and $huboRespuesta) {
             $gh = Get-Command gh -ErrorAction SilentlyContinue
             if ($gh) {
                 & $gh.Source release download $tag --repo $script:RepoGitHub --archive=zip --output $zip --clobber 2>$null | Out-Null

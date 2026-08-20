@@ -313,6 +313,24 @@ function Get-VersionDeTag([string]$tag) {
     try { return [version]($tag -replace '^v', '') } catch { return $null }
 }
 
+# Un pedido HTTP que fallo, fallo por que? Que el servidor haya contestado 404 o 403 no es lo
+# mismo que no haber llegado a ningun servidor, y es lo unico que decide si reintentar con 'gh'
+# sirve para algo:
+#
+#   - Hubo respuesta (404 de un repo privado, 403 del limite anonimo): 'gh' usa la credencial del
+#     usuario y puede contestar lo que la API anonima no. Vale la pena.
+#   - No hubo respuesta (DNS caido, red bloqueada, timeout): no hay red, y 'gh' va a fallar
+#     igual. Reintentar solo agrega espera, y 'gh' NO tiene con que acotarse: medido contra una
+#     red que traga los paquetes, 'gh api' tarda 21 segundos (el timeout de SYN de Windows) y no
+#     hay flag que lo baje. El chequeo de cortesia pasaba de 5 segundos a 26 antes de mostrar el
+#     menu, en silencio y una vez por dia. Sin red ninguna (el DNS falla al toque) eran 0,2.
+#
+# El discriminador es la respuesta: HttpResponseException la trae, y las excepciones de conexion
+# (HttpRequestException) y de timeout (TaskCanceledException) no.
+function Test-HuboRespuestaHttp($errorRecord) {
+    return ($null -ne $errorRecord.Exception.Response)
+}
+
 # El tag del ultimo release, o $null si no se pudo averiguar. NUNCA tira ni corta la corrida:
 # no poder chequear no es un error, es no saber.
 function Get-UltimoReleasePublicado {
@@ -323,6 +341,10 @@ function Get-UltimoReleasePublicado {
         $fuente = "https://api.github.com/repos/$script:RepoGitHub/releases/latest"
     }
 
+    # Que el servidor CONTESTE (aunque sea un error) y que no haya red son dos cosas distintas,
+    # y de ahi depende si tiene sentido reintentar con 'gh'. Ver Test-HuboRespuestaHttp.
+    $huboRespuesta = $false
+
     try {
         if ($fuente -notmatch '^https?://') {
             if (-not (Test-Path -LiteralPath $fuente)) { return $null }
@@ -330,13 +352,16 @@ function Get-UltimoReleasePublicado {
         } else {
             $json = Invoke-RestMethod -Uri $fuente -TimeoutSec 5 -Headers @{ 'User-Agent' = 'Run-SessionPrompts' }
         }
+        $huboRespuesta = $true
         if ($json.tag_name) { return [string]$json.tag_name }
-    } catch { }
+    } catch {
+        $huboRespuesta = Test-HuboRespuestaHttp $_
+    }
 
     # Mientras el repo sea privado, la API anonima contesta 404. 'gh' usa la credencial del
     # usuario y sirve para las dos etapas.
     $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if ($gh -and $fuente -match '^https?://api\.github\.com') {
+    if ($gh -and $huboRespuesta -and $fuente -match '^https?://api\.github\.com') {
         try {
             $salida = & $gh.Source api "repos/$script:RepoGitHub/releases/latest" 2>$null
             if ($LASTEXITCODE -eq 0 -and $salida) {
@@ -359,14 +384,19 @@ function Get-ZipDelRelease([string]$tag) {
 
     $destino = Join-Path ([System.IO.Path]::GetTempPath()) ("run-session-prompts-$tag.zip")
 
+    $huboRespuesta = $false
     try {
         Invoke-WebRequest -Uri "https://github.com/$script:RepoGitHub/archive/refs/tags/$tag.zip" `
                           -OutFile $destino -TimeoutSec 120 -Headers @{ 'User-Agent' = 'Run-SessionPrompts' }
+        $huboRespuesta = $true
         if (Test-Path -LiteralPath $destino) { return $destino }
-    } catch { }
+    } catch {
+        $huboRespuesta = Test-HuboRespuestaHttp $_
+    }
 
+    # Mismo criterio que arriba: sin red, 'gh' no tiene nada que agregar.
     $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if ($gh) {
+    if ($gh -and $huboRespuesta) {
         & $gh.Source release download $tag --repo $script:RepoGitHub --archive=zip --output $destino --clobber 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $destino)) { return $destino }
     }

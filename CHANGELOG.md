@@ -25,6 +25,24 @@ el [README](README.md#versionado-y-releases).
   - **Sin cambios en lo que se corre.** Un número de inicio que cae en un hueco sigue arrancando
     en el siguiente que exista: `-StartFrom 3` en una serie `01`, `02`, `05` corre el `05`.
 
+- **Sin conexión, el chequeo de versión ya no reintenta con `gh`.** El chequeo diario le pide el
+  último release a la API de GitHub con cinco segundos de paciencia, y si eso falla reintenta con
+  `gh`, que va con la credencial del usuario. Ese reintento está para dos casos en los que el
+  servidor **contestó** —repo privado, donde la API anónima devuelve 404, y límite de la API
+  anónima, que devuelve 403—, pero se disparaba también cuando no había red, donde `gh` no puede
+  saber nada que la API anónima no sepa. Y `gh` no tiene con qué acotarse: no hay flag de timeout.
+  Medido contra una red que traga los paquetes, `gh api` tarda **21 segundos** (el timeout de SYN
+  de Windows), así que el chequeo de cortesía pasaba de 5 segundos a **26**, en silencio, antes de
+  mostrar el menú. Ahora el reintento se hace sólo si hubo respuesta HTTP.
+  - **Sin red ninguna no cambia nada**: cuando el DNS falla al toque, el chequeo entero tarda 0,2
+    segundos, antes y ahora. Lo que se arregla es la red *presente pero bloqueada* — un firewall
+    corporativo, un portal cautivo, un proxy que traga los paquetes.
+  - **El mismo criterio en las otras tres bajadas**: la del `.zip` del release en `-Update`, y las
+    dos del instalador (averiguar el tag y bajar el `.zip`). En todas, `gh` queda reservado para
+    cuando el servidor contestó.
+  - **Sin cambios en lo que la corrida depende**: no poder chequear nunca fue un error y sigue sin
+    serlo. La serie corre igual.
+
 ## [1.7.0] — 2026-08-19
 
 ### Cambiado

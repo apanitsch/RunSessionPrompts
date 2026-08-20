@@ -126,8 +126,21 @@ function New-Serie($fixture, [string]$nombre, [hashtable]$prompts) {
     return $dir
 }
 
+# Los argumentos, listos para pegar en una linea de -Command. Los NOMBRES de parametro van sin
+# comillas: entrecomillados, PowerShell los tomaria como valores posicionales y ligaria todo
+# corrido.
+function ConvertTo-ArgsCitados([string[]]$argumentos) {
+    return $argumentos | ForEach-Object {
+        if ($_ -match '^-[A-Za-z]') { $_ } else { "'" + ($_ -replace "'", "''") + "'" }
+    }
+}
+
 # Corre el runner en un pwsh hijo (asi el exit code y los Read-Host quedan aislados).
-function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy) {
+#
+# -Prologo: codigo que corre en ESE pwsh antes del runner. Sirve para poner un doble de un cmdlet
+# -- una funcion definida ahi le gana al cmdlet adentro del script --, que es como se prueba el
+# chequeo de version sin salir a la red.
+function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy, [string]$Prologo) {
     $env:FAKE_CLAUDE_LOG = $fixture.Log
     if ($fakeExit) { $env:FAKE_CLAUDE_EXIT = "$fakeExit" } else { Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue }
 
@@ -139,15 +152,15 @@ function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fa
         $argumentos = @($argumentos | Where-Object { $_ -ne '-ProbarChequeo' })
     }
 
-    if ($Legacy) {
+    if ($Legacy -or $Prologo) {
         # $PSNativeCommandArgumentPassing solo se puede fijar ANTES de invocar el runner, y con
-        # -File no hay donde hacerlo: por eso este camino usa -Command.
-        # Los NOMBRES de parametro van sin comillas: entrecomillados, PowerShell los tomaria
-        # como valores posicionales y ligaria todo corrido.
-        $citados = $argumentos | ForEach-Object {
-            if ($_ -match '^-[A-Za-z]') { $_ } else { "'" + ($_ -replace "'", "''") + "'" }
-        }
-        $linea = "`$PSNativeCommandArgumentPassing = 'Legacy'; & '" + ($fixture.Runner -replace "'", "''") + "' " + ($citados -join ' ')
+        # -File no hay donde hacerlo: por eso este camino usa -Command. El -Prologo va en el
+        # mismo lugar y por el mismo motivo.
+        $citados = ConvertTo-ArgsCitados $argumentos
+        $linea = ''
+        if ($Legacy)  { $linea += "`$PSNativeCommandArgumentPassing = 'Legacy'; " }
+        if ($Prologo) { $linea += "$Prologo; " }
+        $linea += "& '" + ($fixture.Runner -replace "'", "''") + "' " + ($citados -join ' ')
         $todos = @('-NoProfile', '-Command', $linea)
     } else {
         $todos = @('-NoProfile', '-File', $fixture.Runner) + $argumentos
@@ -212,12 +225,19 @@ function New-RepoVacio {
     return $dir
 }
 
-function Invoke-Instalador([string]$repo, [string[]]$argumentos) {
+function Invoke-Instalador([string]$repo, [string[]]$argumentos, [string]$Prologo) {
     # Por defecto NO se lanza la sesion de Claude: los casos que la prueban pasan -ClaudeCommand
     # con el doble y sacan el -SkipClaudeMd.
     if (-not ($argumentos -contains '-ClaudeCommand')) { $argumentos = @('-SkipClaudeMd') + $argumentos }
 
-    $todos = @('-NoProfile', '-File', $script:Instalador, '-Repo', $repo) + $argumentos
+    if ($Prologo) {
+        # Mismo mecanismo que en Invoke-Runner: con -File no hay donde poner el doble del cmdlet.
+        $citados = ConvertTo-ArgsCitados (@('-Repo', $repo) + $argumentos)
+        $linea = "$Prologo; & '" + ($script:Instalador -replace "'", "''") + "' " + ($citados -join ' ')
+        $todos = @('-NoProfile', '-Command', $linea)
+    } else {
+        $todos = @('-NoProfile', '-File', $script:Instalador, '-Repo', $repo) + $argumentos
+    }
     $salida = & pwsh @todos 2>&1
     return [pscustomobject]@{
         Salida   = ($salida | ForEach-Object { "$_" }) -join "`n"
@@ -342,6 +362,55 @@ function New-ReleaseFalso([string]$version) {
     Set-Content -LiteralPath $json -Value ("{`"tag_name`": `"v$version`"}") -Encoding UTF8
 
     return [pscustomobject]@{ Zip = $zip; Json = $json; Version = $version }
+}
+
+# Doble de 'gh': anota cada invocacion, y contesta el tag que le digan (o falla, si no le dicen
+# ninguno). Va primero en el PATH del hijo, asi que los casos son deterministas: no importa si la
+# maquina que corre la suite tiene 'gh' instalado.
+function New-GhFalso([string]$dirBase, [string]$tag) {
+    $dir = Join-Path $dirBase 'fake-gh'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+    $lineas = @('Add-Content -LiteralPath $env:FAKE_GH_LOG -Value ($args -join " ") -Encoding UTF8')
+    if ([string]::IsNullOrWhiteSpace($tag)) {
+        $lineas += 'exit 1'
+    } else {
+        $lineas += ('Write-Output ''{ "tag_name": "' + $tag + '" }''')
+        $lineas += 'exit 0'
+    }
+    Set-Content -LiteralPath (Join-Path $dir 'gh.ps1') -Value ($lineas -join "`r`n") -Encoding UTF8
+
+    return [pscustomobject]@{ Dir = $dir; Log = (Join-Path $dirBase 'fake-gh.log') }
+}
+
+# Dobles de los dos cmdlets que salen a la red. El de "sin red" tira lo que tira una conexion que
+# no llega a ningun lado; el de "404" tira lo que tira un servidor que CONTESTO que no. La
+# diferencia entre los dos es lo unico que decide si el runner reintenta con 'gh'.
+$script:SinRedStub = 'function Invoke-RestMethod { param($Uri, $TimeoutSec, $Headers) throw [System.Net.Http.HttpRequestException]::new("sin red") }; ' +
+                     'function Invoke-WebRequest { param($Uri, $OutFile, $TimeoutSec, $Headers) throw [System.Net.Http.HttpRequestException]::new("sin red") }'
+
+$script:Respuesta404Stub = 'function Invoke-RestMethod { param($Uri, $TimeoutSec, $Headers) throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("404", [System.Net.Http.HttpResponseMessage]::new(404)) }'
+
+# Corre el runner con el chequeo de version ENCENDIDO pero sin tocar la red: el doble de gh
+# primero en el PATH, un perfil nuevo para que el cache diario no saltee el chequeo, y el cmdlet
+# HTTP reemplazado por el stub.
+function Invoke-RunnerSinRed($fixture, [string[]]$argumentos, [string]$stub, $gh, [string]$stdin) {
+    $perfil = Join-Path ([System.IO.Path]::GetTempPath()) ("rsp-perfil-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $perfil -Force | Out-Null
+    $script:Temporales += $perfil
+
+    $pathOriginal = $env:PATH
+    $localAppDataOriginal = $env:LOCALAPPDATA
+    $env:PATH = $gh.Dir + [System.IO.Path]::PathSeparator + $env:PATH
+    $env:LOCALAPPDATA = $perfil
+    $env:FAKE_GH_LOG = $gh.Log
+    try {
+        return Invoke-Runner $fixture (@('-ProbarChequeo') + $argumentos) $stdin -Prologo $stub
+    } finally {
+        $env:PATH = $pathOriginal
+        $env:LOCALAPPDATA = $localAppDataOriginal
+        Remove-Item Env:\FAKE_GH_LOG -ErrorAction SilentlyContinue
+    }
 }
 
 # --- Casos ----------------------------------------------------------------
@@ -1489,6 +1558,48 @@ Test-Case "-FromRelease sin poder averiguar el tag corta con un error que dice q
     Assert-Match '-FromRelease v1\.2\.3' $r.Salida "y con la salida a mano"
 }
 
+Test-Case "el instalador sin red tampoco reintenta con gh, y dice como salir a mano" {
+    $repo = New-RepoVacio
+    $gh = New-GhFalso $repo 'v9.9.9'
+
+    # Sin SESSION_PROMPTS_RELEASES_URL: la fuente es la de siempre, o sea que el reintento con
+    # gh esta habilitado y lo unico que lo frena es que no hubo respuesta del servidor.
+    $pathOriginal = $env:PATH
+    $env:PATH = $gh.Dir + [System.IO.Path]::PathSeparator + $env:PATH
+    $env:FAKE_GH_LOG = $gh.Log
+    try {
+        $r = Invoke-Instalador $repo @('-FromRelease', 'latest') -Prologo $script:SinRedStub
+    } finally {
+        $env:PATH = $pathOriginal
+        Remove-Item Env:\FAKE_GH_LOG -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
+    Assert-Match 'No pude averiguar cual es el ultimo release' $r.Salida "con el motivo"
+    Assert-Match '-ReleaseZip <ruta>' $r.Salida "y con la salida para una maquina sin salida a internet"
+    Assert-True (-not (Test-Path -LiteralPath $gh.Log)) "sin respuesta del servidor no hay red, y gh solo agrega espera"
+}
+
+Test-Case "el instalador sin red no reintenta con gh la bajada de un tag concreto" {
+    $repo = New-RepoVacio
+    $gh = New-GhFalso $repo 'v9.9.9'
+
+    # Con el tag dado no hay nada que averiguar: lo que falla es la bajada.
+    $pathOriginal = $env:PATH
+    $env:PATH = $gh.Dir + [System.IO.Path]::PathSeparator + $env:PATH
+    $env:FAKE_GH_LOG = $gh.Log
+    try {
+        $r = Invoke-Instalador $repo @('-FromRelease', 'v9.9.9') -Prologo $script:SinRedStub
+    } finally {
+        $env:PATH = $pathOriginal
+        Remove-Item Env:\FAKE_GH_LOG -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($r.ExitCode -ne 0) "tiene que fallar"
+    Assert-Match 'No pude bajar el release' $r.Salida "con el motivo"
+    Assert-True (-not (Test-Path -LiteralPath $gh.Log)) "sin respuesta del servidor no hay red, y gh solo agrega espera"
+}
+
 Test-Case "-ReleaseZip junto con -FromRelease avisa cual de los dos origenes usa" {
     $repo = New-RepoVacio
     $rel = New-ReleaseFalso '9.9.9'
@@ -1614,6 +1725,54 @@ Test-Case "checkForUpdates false en la configuracion apaga el chequeo" {
 
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
     Assert-NotMatch 'Hay una version nueva' $r.Salida "con la configuracion en false no tiene que chequear"
+}
+
+Test-Case "sin red, el chequeo no reintenta con gh: no tendria nada que agregar, y no se acota" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-red' @{ '01-uno.md' = 'x' }
+    $gh = New-GhFalso $f.Repo 'v9.9.9'
+
+    $r = Invoke-RunnerSinRed $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus',
+        '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) $script:SinRedStub $gh "2`n"
+
+    Assert-Equal 0 $r.ExitCode "no poder chequear no puede romper la corrida. Salida:`n$($r.Salida)"
+    Assert-True (-not (Test-Path -LiteralPath $gh.Log)) "sin respuesta del servidor no hay red, y 'gh api' contra una red que traga los paquetes tarda 21 segundos que nadie puede bajar"
+    Assert-NotMatch 'Hay una version nueva' $r.Salida "y por lo tanto tampoco puede anunciar el tag que el doble de gh iba a contestar"
+    Assert-Equal 1 (Get-Sesiones $f).Count "y la serie corre igual"
+}
+
+Test-Case "un 404 de la API si se reintenta con gh: puede ser el repo privado, o el limite anonimo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-404' @{ '01-uno.md' = 'x' }
+    $gh = New-GhFalso $f.Repo 'v9.9.9'
+
+    $r = Invoke-RunnerSinRed $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus',
+        '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude) $script:Respuesta404Stub $gh "2`n"
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-True (Test-Path -LiteralPath $gh.Log) "el servidor contesto, asi que gh -- que va con la credencial del usuario -- si puede saber algo que la API anonima no"
+    Assert-Match 'api repos/.+/releases/latest' (Get-Content -LiteralPath $gh.Log -Raw -Encoding UTF8) "y se le pide el ultimo release"
+    Assert-Match 'Hay una version nueva de Run-SessionPrompts: v9\.9\.9' $r.Salida "y la respuesta de gh es la que se usa"
+    Assert-Equal 1 (Get-Sesiones $f).Count "contestar que no a la oferta sigue con la corrida"
+}
+
+Test-Case "-Update sin red no reintenta la bajada con gh, y corta diciendo que no pudo" {
+    $f = New-Fixture
+    $rel = New-ReleaseFalso '9.9.9'
+    $gh = New-GhFalso $f.Repo 'v9.9.9'
+
+    # El tag se averigua de un archivo local: lo que no hay es red para BAJAR el zip.
+    $env:SESSION_PROMPTS_RELEASES_URL = $rel.Json
+    try {
+        $r = Invoke-RunnerSinRed $f @('-Update', '-SkipClaudeMd') $script:SinRedStub $gh
+    } finally {
+        Remove-Item Env:\SESSION_PROMPTS_RELEASES_URL -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($r.ExitCode -ne 0) "no puede decir que actualizo si no bajo nada"
+    Assert-Match 'No pude bajar el release' $r.Salida "con el motivo"
+    Assert-NotMatch 'Actualizado a' $r.Salida "y sin anunciar lo contrario"
+    Assert-True (-not (Test-Path -LiteralPath $gh.Log)) "el mismo criterio vale para la bajada: sin red, gh solo agrega espera"
 }
 
 Test-Case "-Update no pisa un runner que el instalador no reconoce, y dice como forzarlo" {
