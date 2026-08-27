@@ -6,6 +6,22 @@ el [README](README.md#versionado-y-releases).
 
 ## [No publicado]
 
+### Agregado
+
+- **`-PermissionMode` elige el modo de permisos de la corrida, y `-Auto` es su atajo para el modo
+  "Auto" de Claude Code Desktop.** El runner tenía dos escalones cableados —`--permission-mode
+  acceptEdits` por defecto, `--dangerously-skip-permissions` con `-FullAuto`— y el CLI acepta
+  seis modos: `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`. `auto`
+  **no** es `acceptEdits`: es el modo donde el modelo decide cuándo pedir permiso, y no había
+  forma de correr una serie así sin editar el script, que es justo lo que este producto no
+  quiere. Ahora se pasan los seis tal cual, sin que el runner los interprete.
+  - **El default no cambia**: sin parámetro sigue siendo `acceptEdits`.
+  - También se fija por repo con la clave `permissionMode` en `session-prompts.config.json`.
+  - **Pedir dos cosas a la vez corta.** `-FullAuto` junto con `-Auto` o con `-PermissionMode`, o
+    las claves `fullAuto` y `permissionMode` juntas en el archivo, son una contradicción y no
+    una precedencia silenciosa. `-Auto` con `-PermissionMode auto` sí se acepta: dicen lo mismo.
+  - **El modo queda impreso** en el encabezado del plan, al lado del modelo y el effort.
+
 ### Corregido
 
 - **Un número que no está en el menú de series ya no se toma como una ruta.** Elegir la `[7]` cuando

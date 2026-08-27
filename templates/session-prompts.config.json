@@ -7,8 +7,11 @@
   "_effort": "low | medium | high | xhigh | max. Si esta, el script no muestra el menu de effort. null = preguntar.",
   "effort": null,
 
-  "_fullAuto": "true = --dangerously-skip-permissions en todas las sesiones. Default false (--permission-mode acceptEdits).",
+  "_fullAuto": "true = --dangerously-skip-permissions en todas las sesiones. Default false (--permission-mode acceptEdits). No se combina con permissionMode: poner las dos corta con un error.",
   "fullAuto": false,
+
+  "_permissionMode": "Modo de permisos de todas las sesiones: acceptEdits (default), auto, bypassPermissions, manual, dontAsk, plan. 'auto' es el modo Auto de Claude Code Desktop, que NO es acceptEdits. null = acceptEdits.",
+  "permissionMode": null,
 
   "_worktree": "true = cada serie corre aislada en su propio git worktree. Default false (corre en el checkout donde estas).",
   "worktree": false,

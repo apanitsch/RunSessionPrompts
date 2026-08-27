@@ -171,7 +171,9 @@ pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -DryRun
 | `-StartFrom` | Número desde el cual empezar (`3` arranca en `03-…`). Es el **número**, no el nombre. |
 | `-Model` | `opus` (default) o `sonnet`. Es el **tope**: cada prompt puede pedir menos, y para pedir más el script confirma. |
 | `-Effort` | `low`, `medium`, `high` (default), `xhigh`, `max`. También es un **tope**, con la misma regla. |
-| `-FullAuto` | `--dangerously-skip-permissions` en vez de `--permission-mode acceptEdits`. |
+| `-PermissionMode` | El modo de permisos de toda la corrida: `acceptEdits` (default), `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`. Se pasa tal cual a `--permission-mode`. |
+| `-Auto` | Atajo de `-PermissionMode auto`, el modo **Auto** de Claude Code Desktop. Ojo: `auto` **no** es `acceptEdits`, son dos modos distintos del CLI. |
+| `-FullAuto` | `--dangerously-skip-permissions` en vez de `--permission-mode`. Junto con `-Auto` o `-PermissionMode` es un error, no una precedencia. |
 | `-Todas` | El menú incluye también las series ya terminadas. |
 | `-Worktree` | La serie corre aislada en su propio git worktree. |
 | `-BaseBranch`, `-BranchPrefix`, `-WorktreeRoot` | Detalles del worktree. |
@@ -263,7 +265,7 @@ aisladas, el modelo de siempre— se escribe una vez y no se vuelve a tipear. Pr
 clave.
 
 El runner lo **valida entero al arrancar**, contra la lista de claves que realmente mira
-(`model`, `effort`, `fullAuto`, `worktree`, `baseBranch`, `branchPrefix`, `worktreeRoot`,
+(`model`, `effort`, `fullAuto`, `permissionMode`, `worktree`, `baseBranch`, `branchPrefix`, `worktreeRoot`,
 `checkForUpdates`, `claudeCommand`, `maxPromptChars`) y contra el tipo de cada una. Una clave
 desconocida corta con un error que la nombra y sugiere la parecida (`'modelo'. Quisiste decir
 'model'?`); un valor del tipo equivocado dice qué se esperaba (`true o false, sin comillas`). Salen

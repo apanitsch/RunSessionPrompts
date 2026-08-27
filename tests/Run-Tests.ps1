@@ -559,6 +559,107 @@ Test-Case "los flags de permisos y effort van en todas las sesiones" {
     Assert-True (-not (@($s2[0].Args) -contains '--permission-mode')) "-FullAuto no lleva --permission-mode"
 }
 
+Test-Case "-Auto es el atajo de -PermissionMode auto, y 'auto' no es 'acceptEdits'" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-auto' @{ '01-uno.md' = 'x'; '02-dos.md' = 'y' }
+    $base = @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+
+    $r = Invoke-Runner $f ($base + '-Auto')
+    Assert-Equal 0 $r.ExitCode "exit code (-Auto). Salida:`n$($r.Salida)"
+    $s = Get-Sesiones $f
+    Assert-Equal 'auto' (Get-ArgValue $s[0] '--permission-mode') "-Auto tiene que pasar --permission-mode auto"
+    Assert-Equal 'auto' (Get-ArgValue $s[1] '--permission-mode') "y en TODAS las sesiones de la corrida"
+
+    # El mismo modo, escrito largo.
+    Remove-Item -LiteralPath $f.Log
+    $r2 = Invoke-Runner $f ($base + @('-PermissionMode', 'auto'))
+    Assert-Equal 0 $r2.ExitCode "exit code (-PermissionMode auto). Salida:`n$($r2.Salida)"
+    Assert-Equal 'auto' (Get-ArgValue (Get-Sesiones $f)[0] '--permission-mode') "-PermissionMode auto"
+
+    # Y otro de los seis, para que el parametro no sea un booleano disfrazado.
+    Remove-Item -LiteralPath $f.Log
+    $r3 = Invoke-Runner $f ($base + @('-PermissionMode', 'plan'))
+    Assert-Equal 0 $r3.ExitCode "exit code (-PermissionMode plan). Salida:`n$($r3.Salida)"
+    Assert-Equal 'plan' (Get-ArgValue (Get-Sesiones $f)[0] '--permission-mode') "-PermissionMode plan"
+}
+
+Test-Case "un modo de permisos que no existe corta, venga del parametro o de la configuracion" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-modo-malo' @{ '01-uno.md' = 'x' }
+    $base = @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+
+    # Por parametro lo ataja el ValidateSet, antes de que el script corra.
+    $r = Invoke-Runner $f ($base + @('-PermissionMode', 'autoo'))
+    Assert-True ($r.ExitCode -ne 0) "un modo inexistente no puede pasar"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+
+    # Por configuracion lo ataja el script, y tiene que decir cuales valen.
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "permissionMode": "autoo" }'
+    $r2 = Invoke-Runner $f $base
+    Assert-True ($r2.ExitCode -ne 0) "un modo inexistente en la configuracion tampoco"
+    Assert-Match 'acceptEdits' $r2.Salida "el error tiene que listar los validos"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "pedir dos modos de permisos a la vez corta, y no elige uno en silencio" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-modos-en-conflicto' @{ '01-uno.md' = 'x' }
+    $base = @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+
+    $r = Invoke-Runner $f ($base + @('-FullAuto', '-Auto'))
+    Assert-True ($r.ExitCode -ne 0) "-FullAuto con -Auto tiene que cortar"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+
+    $r2 = Invoke-Runner $f ($base + @('-Auto', '-PermissionMode', 'plan'))
+    Assert-True ($r2.ExitCode -ne 0) "-Auto con otro -PermissionMode tiene que cortar"
+
+    # -Auto con -PermissionMode auto es lo MISMO, no un conflicto.
+    $r3 = Invoke-Runner $f ($base + @('-Auto', '-PermissionMode', 'auto'))
+    Assert-Equal 0 $r3.ExitCode "-Auto y -PermissionMode auto dicen lo mismo. Salida:`n$($r3.Salida)"
+    Assert-Equal 'auto' (Get-ArgValue (Get-Sesiones $f)[0] '--permission-mode') "y el modo es auto"
+
+    # Las dos claves juntas en el archivo tampoco tienen desempate.
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "fullAuto": true, "permissionMode": "auto" }'
+    $r4 = Invoke-Runner $f $base
+    Assert-True ($r4.ExitCode -ne 0) "fullAuto y permissionMode juntos en la configuracion tienen que cortar"
+}
+
+Test-Case "el modo de permisos sale de la configuracion, y un parametro explicito le gana" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-modo-config' @{ '01-uno.md' = 'x' }
+    $base = @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "permissionMode": "auto" }'
+
+    $r = Invoke-Runner $f $base
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Equal 'auto' (Get-ArgValue (Get-Sesiones $f)[0] '--permission-mode') "modo de la configuracion"
+
+    Remove-Item -LiteralPath $f.Log
+    $r2 = Invoke-Runner $f ($base + @('-PermissionMode', 'acceptEdits'))
+    Assert-Equal 0 $r2.ExitCode "exit code. Salida:`n$($r2.Salida)"
+    Assert-Equal 'acceptEdits' (Get-ArgValue (Get-Sesiones $f)[0] '--permission-mode') "el parametro le gana"
+
+    # -FullAuto tambien le gana a un permissionMode del archivo.
+    Remove-Item -LiteralPath $f.Log
+    $r3 = Invoke-Runner $f ($base + '-FullAuto')
+    Assert-Equal 0 $r3.ExitCode "exit code. Salida:`n$($r3.Salida)"
+    $s3 = Get-Sesiones $f
+    Assert-True (@($s3[0].Args) -contains '--dangerously-skip-permissions') "-FullAuto le gana al permissionMode del archivo"
+    Assert-True (-not (@($s3[0].Args) -contains '--permission-mode')) "y no lleva --permission-mode"
+}
+
+Test-Case "-Auto le gana a un 'fullAuto': true de la configuracion" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-auto-vs-fullauto' @{ '01-uno.md' = 'x' }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "fullAuto": true }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-Auto', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    $s = Get-Sesiones $f
+    Assert-Equal 'auto' (Get-ArgValue $s[0] '--permission-mode') "-Auto anula el fullAuto del archivo"
+    Assert-True (-not (@($s[0].Args) -contains '--dangerously-skip-permissions') ) "y no manda el flag peligroso"
+}
+
 Test-Case "el menu lista solo las series pendientes, en el orden propuesto, y saltea las que empiezan con _" {
     $f = New-Fixture
     New-Serie $f 'zeta-pendiente'   @{ '01-a.md' = 'a' } | Out-Null

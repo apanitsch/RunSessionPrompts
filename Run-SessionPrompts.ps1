@@ -75,10 +75,25 @@
     No hace falta que exista un prompt con ese numero exacto: en una serie 01, 02, 05, un 3
     arranca en el 05. Un numero posterior al ultimo prompt no deja nada que correr, y corta.
 
+.PARAMETER PermissionMode
+    Modo de permisos de todas las sesiones de la corrida: se pasa tal cual a
+    '--permission-mode'. Valores: acceptEdits (default), auto, bypassPermissions, manual,
+    dontAsk, plan. Son los que acepta el CLI, y el runner NO los interpreta: si en una version
+    de Claude Code alguno cambia de sentido, cambia igual aca.
+
+    El default sigue siendo 'acceptEdits' (auto-acepta ediciones; igual te puede preguntar por
+    comandos, y los respondes desde el celular).
+
+.PARAMETER Auto
+    Atajo de '-PermissionMode auto': el modo "Auto" de Claude Code Desktop, donde el modelo
+    decide cuando pedir permiso. NO es lo mismo que acceptEdits, que es el default.
+
 .PARAMETER FullAuto
-    Por defecto usa '--permission-mode acceptEdits' (auto-acepta ediciones; igual te puede
-    preguntar por comandos y los respondes desde el celular). Con -FullAuto usa
-    '--dangerously-skip-permissions' (no pregunta nada).
+    Atajo de '--dangerously-skip-permissions' (no pregunta nada). Es un flag propio del CLI, no
+    un valor de '--permission-mode': con -FullAuto no se pasa '--permission-mode' ninguno.
+
+    Pasar -FullAuto junto con -Auto o con -PermissionMode es un error, no una precedencia
+    silenciosa: son dos ordenes distintas sobre lo mismo.
 
 .PARAMETER Model
     Modelo BASE de la corrida: 'opus' (Opus 5, default) o 'sonnet' (Sonnet 5). Si no se pasa y
@@ -189,6 +204,10 @@
     .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -StartFrom 1 -Model sonnet -Effort max
 
 .EXAMPLE
+    # En el modo "Auto" del desktop, en vez del acceptEdits de siempre.
+    .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Auto
+
+.EXAMPLE
     # La serie corre aislada en su propio worktree, partiendo de main.
     .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Worktree -BaseBranch main
 
@@ -241,6 +260,14 @@ param(
     [int]$StartFrom,
 
     [switch]$FullAuto,
+
+    # Los seis modos que acepta 'claude --permission-mode'. 'auto' es el modo "Auto" del
+    # desktop, y NO es acceptEdits: son dos modos distintos del CLI.
+    [ValidateSet('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan')]
+    [string]$PermissionMode,
+
+    # Atajo de '-PermissionMode auto'.
+    [switch]$Auto,
 
     # Alias corto: 'opus' / 'sonnet' apuntan siempre al ultimo de cada familia.
     # El id completo se resuelve mas abajo para dejarlo explicito en el log.
@@ -488,6 +515,7 @@ $script:ConfigEsquema = [ordered]@{
     'model'           = 'texto'
     'effort'          = 'texto'
     'fullAuto'        = 'booleano'
+    'permissionMode'  = 'texto'
     'worktree'        = 'booleano'
     'baseBranch'      = 'texto'
     'branchPrefix'    = 'texto'
@@ -646,7 +674,50 @@ $BranchPrefix  = Resolve-Setting 'branchPrefix'  $BranchPrefix  'sesiones'
 $BaseBranch    = Resolve-Setting 'baseBranch'    $BaseBranch    ''
 $WorktreeRoot  = Resolve-Setting 'worktreeRoot'  $WorktreeRoot  ''
 $usaWorktree   = Resolve-SwitchSetting 'worktree' $PSBoundParameters.ContainsKey('Worktree') ([bool]$Worktree) $false
-$fullAuto      = Resolve-SwitchSetting 'fullAuto' $PSBoundParameters.ContainsKey('FullAuto') ([bool]$FullAuto) $false
+
+# --- Permisos: un solo modo para toda la corrida --------------------------
+# Tres maneras de decir lo mismo (-PermissionMode, su atajo -Auto, y -FullAuto, que no es un
+# modo sino otro flag del CLI), asi que dos de ellas juntas son una contradiccion, no una
+# precedencia: se corta. Un modo que se ignora en silencio es exactamente lo que este script
+# no hace.
+$script:ModosDePermiso = @('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan')
+
+$modoPasado     = $PSBoundParameters.ContainsKey('PermissionMode')
+$autoPasado     = $PSBoundParameters.ContainsKey('Auto') -and [bool]$Auto
+$fullAutoPasado = $PSBoundParameters.ContainsKey('FullAuto') -and [bool]$FullAuto
+
+if ($autoPasado -and $modoPasado -and $PermissionMode -ne 'auto') {
+    Write-Host "-Auto es el atajo de '-PermissionMode auto', y pediste '-PermissionMode $PermissionMode'." -ForegroundColor Red
+    Write-Host "Elegi uno de los dos." -ForegroundColor DarkGray
+    exit 1
+}
+if ($fullAutoPasado -and ($autoPasado -or $modoPasado)) {
+    $otro = if ($modoPasado) { "-PermissionMode $PermissionMode" } else { '-Auto' }
+    Write-Host "-FullAuto (--dangerously-skip-permissions) y $otro piden dos cosas distintas." -ForegroundColor Red
+    Write-Host "Elegi uno de los dos. Para no preguntar nada, -FullAuto; para el modo Auto del desktop, -Auto." -ForegroundColor DarkGray
+    exit 1
+}
+
+# Un parametro explicito le gana a la configuracion, de los dos lados: -FullAuto anula un
+# 'permissionMode' del archivo, y -Auto/-PermissionMode anulan un '"fullAuto": true'.
+$modoExplicito = if ($modoPasado) { $PermissionMode } elseif ($autoPasado) { 'auto' } else { '' }
+
+$fullAuto = if ($modoExplicito) { $false }
+            else { Resolve-SwitchSetting 'fullAuto' $PSBoundParameters.ContainsKey('FullAuto') ([bool]$FullAuto) $false }
+
+$modoPermiso = ''
+if (-not $fullAuto) {
+    $modoPermiso = Resolve-Setting 'permissionMode' $modoExplicito 'acceptEdits'
+    if (-not ($script:ModosDePermiso -contains $modoPermiso)) {
+        Write-Host "Modo de permisos desconocido: '$modoPermiso'. Validos: $($script:ModosDePermiso -join ', ')." -ForegroundColor Red
+        exit 1
+    }
+} elseif (-not $fullAutoPasado -and $null -ne (Get-ConfigValue 'permissionMode')) {
+    # Los dos salen del archivo: nadie desempata.
+    Write-Host "La configuracion pide 'fullAuto': true y ademas 'permissionMode'. Son dos cosas distintas." -ForegroundColor Red
+    Write-Host "Dejate una sola en $script:ConfigPath." -ForegroundColor DarkGray
+    exit 1
+}
 
 # Los tres parametros del worktree no hacen NADA si la serie no corre aislada. Pasarlos y que no
 # pase nada se lee como que se aplicaron: quien los paso cree que la serie va a salir de esa rama.
@@ -1093,7 +1164,7 @@ $claudeArgs = @()
 if ($fullAuto) {
     $claudeArgs += '--dangerously-skip-permissions'
 } else {
-    $claudeArgs += @('--permission-mode', 'acceptEdits')
+    $claudeArgs += @('--permission-mode', $modoPermiso)
 }
 
 # --- Como viaja el prompt hasta claude ------------------------------------
@@ -1420,6 +1491,8 @@ if ($usaWorktree) {
     Write-Host "Proyecto (directorio de trabajo): $workDir" -ForegroundColor DarkGray
 }
 Write-Host "Tope de la corrida: $($modelo.Etiqueta) ($($modelo.Id))  |  effort $Effort" -ForegroundColor DarkGray
+$quePermisos = if ($fullAuto) { '--dangerously-skip-permissions (no pregunta nada)' } else { "--permission-mode $modoPermiso" }
+Write-Host "Permisos: $quePermisos" -ForegroundColor DarkGray
 if ($script:ConfigPath) {
     Write-Host "Configuracion: $script:ConfigPath" -ForegroundColor DarkGray
 }
