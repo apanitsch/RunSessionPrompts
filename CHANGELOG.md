@@ -22,6 +22,14 @@ el [README](README.md#versionado-y-releases).
     una precedencia silenciosa. `-Auto` con `-PermissionMode auto` sí se acepta: dicen lo mismo.
   - **El modo queda impreso** en el encabezado del plan, al lado del modelo y el effort.
 
+- **El README arranca con un ejemplo de uso**, antes de la instalación: el pedido con el que se le
+  encarga la serie a Claude, la lista de sesiones que devuelve, y la corrida en consola. La consola
+  va como imagen (`docs/ejemplo-corrida.svg`) porque GitHub no renderiza colores en un bloque de
+  código, y los colores son parte de lo que se muestra. La genera
+  `docs/gen-ejemplo-corrida.ps1` desde una lista de líneas: **nada verifica que ese texto siga
+  coincidiendo con lo que el runner imprime**, así que cambiar una cadena del script obliga a
+  actualizar la lista y volver a correrlo.
+
 ### Corregido
 
 - **Un número que no está en el menú de series ya no se toma como una ruta.** Elegir la `[7]` cuando

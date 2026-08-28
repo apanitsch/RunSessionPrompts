@@ -3,6 +3,31 @@
 Corre **series de prompts numerados** con Claude Code: un prompt por sesión, cada uno en contexto
 limpio y con Remote Control, para que la serie entera avance sin que tengas que estar en la máquina.
 
+## Un ejemplo
+
+**Vos:** Vamos a planificar la continuación del circuito de invitaciones. El alcance es: desde que el
+usuario la recibe y navega con el link (`/invitacion#t=<token>`) hasta que abre y configura su
+cuenta. La idea es discutir y afinar acá, y después vos armás un plan de sesiones para la ejecución.
+
+**Claude:** (...)
+
+**Vos:** Cerrado, armá la serie verificando en el código nuestros supuestos.
+
+**Claude:** Las nueve sesiones:
+
+| # | Sesión | Modelo · effort |
+| --- | --- | --- |
+| 01 | El link, el token y la página de destino | `opus` · `xhigh` |
+| 02 | El modelo: la invitación y la cuenta nueva | `opus` · `high` |
+| (...) | (...) | (...) |
+| 09 | Decisiones, invariantes y cierre | `opus` · `high` |
+
+![Corrida de la serie 'invitaciones': el menú de series, el de modelo y el de effort, la
+confirmación del effort que la sesión 01 pide por encima del tope, el plan de las nueve sesiones, y
+el encadenado de la 01, la 02 y la 09 hasta el cierre.](docs/ejemplo-corrida.svg)
+
+---
+
 ## Instalar
 
 Parado en el repo donde lo quieras usar. No hace falta clonar nada: alcanza con bajar el
@@ -406,6 +431,18 @@ directorio de trabajo). Verifica orden, nombres de sesión, modelo por sesión, 
 intacto, `cwd`, exit codes, worktree, configuración y menús. Con `-KeepTemp` no borra los temporales.
 
 Todo cambio al runner entra con su caso.
+
+### La captura del ejemplo
+
+La consola del [ejemplo](#un-ejemplo) va como imagen porque GitHub no renderiza colores en un bloque
+de código, y los colores son parte de lo que se está mostrando. La arma
+[`docs/gen-ejemplo-corrida.ps1`](docs/gen-ejemplo-corrida.ps1) desde una lista de líneas con su
+color: nada verifica que ese texto siga coincidiendo con lo que el runner imprime, así que si cambiás
+una cadena del script, actualizá la lista y volvé a correrlo.
+
+```bash
+pwsh -File .\docs\gen-ejemplo-corrida.ps1
+```
 
 ### Versionado y releases
 

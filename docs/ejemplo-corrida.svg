@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="910" height="1068" viewBox="0 0 910 1068" font-family="ui-monospace, 'Cascadia Mono', 'Cascadia Code', Consolas, 'DejaVu Sans Mono', 'Courier New', monospace" font-size="13">
+  <title>Run-SessionPrompts.ps1: una corrida de nueve sesiones</title>
+  <rect width="910" height="1068" rx="8" fill="#0c0c0c"/>
+  <text x="18" y="34" fill="#cccccc" xml:space="preserve">PS C:\repos\MiApp&gt; pwsh -File .\docs\session-prompts\Run-SessionPrompts.ps1</text>
+  <text x="18" y="72" fill="#61d6d6" xml:space="preserve">Series pendientes (en orden de ejecucion propuesta):</text>
+  <text x="18" y="91" fill="#cccccc" xml:space="preserve">  [1] invitaciones (9 prompts)</text>
+  <text x="18" y="110" fill="#cccccc" xml:space="preserve">  [2] limpiar-appsettings (3 prompts)</text>
+  <text x="18" y="129" fill="#cccccc" xml:space="preserve">Elegi el numero (o pega una ruta): 1</text>
+  <text x="18" y="148" fill="#767676" xml:space="preserve">Serie: invitaciones</text>
+  <text x="18" y="167" fill="#cccccc" xml:space="preserve">Empezar desde el numero (Enter = desde el primero; la serie llega hasta el 9):</text>
+  <text x="18" y="186" fill="#61d6d6" xml:space="preserve">Modelo:</text>
+  <text x="18" y="205" fill="#cccccc" xml:space="preserve">  [1] Opus 5 (default)</text>
+  <text x="18" y="224" fill="#cccccc" xml:space="preserve">  [2] Sonnet 5</text>
+  <text x="18" y="243" fill="#cccccc" xml:space="preserve">Elegi el numero (Enter = Opus 5):</text>
+  <text x="18" y="262" fill="#61d6d6" xml:space="preserve">Effort:</text>
+  <text x="18" y="281" fill="#cccccc" xml:space="preserve">  [1] high (default)</text>
+  <text x="18" y="300" fill="#cccccc" xml:space="preserve">  [2] low</text>
+  <text x="18" y="319" fill="#cccccc" xml:space="preserve">  [3] medium</text>
+  <text x="18" y="338" fill="#cccccc" xml:space="preserve">  [4] xhigh</text>
+  <text x="18" y="357" fill="#cccccc" xml:space="preserve">  [5] max</text>
+  <text x="18" y="376" fill="#cccccc" xml:space="preserve">Elegi el numero (Enter = high):</text>
+  <text x="18" y="414" fill="#f9f1a5" xml:space="preserve">01-link-token-y-destino.md sugiere effort xhigh y la corrida esta en high.</text>
+  <text x="18" y="433" fill="#cccccc" xml:space="preserve">  [1] Usar xhigh en ESTA sesion (lo que pide el prompt)  (default)</text>
+  <text x="18" y="452" fill="#cccccc" xml:space="preserve">  [2] Correrla igual con high</text>
+  <text x="18" y="471" fill="#cccccc" xml:space="preserve">  [3] Abortar</text>
+  <text x="18" y="490" fill="#cccccc" xml:space="preserve">Elegi el numero (Enter = 1):</text>
+  <text x="18" y="528" fill="#61d6d6" xml:space="preserve">Ejecutando 9 prompts de la serie 'invitaciones'</text>
+  <text x="18" y="547" fill="#767676" xml:space="preserve">Prompts: C:\repos\MiApp\docs\session-prompts\invitaciones</text>
+  <text x="18" y="566" fill="#767676" xml:space="preserve">Proyecto (directorio de trabajo): C:\repos\MiApp</text>
+  <text x="18" y="585" fill="#767676" xml:space="preserve">Tope de la corrida: Opus 5 (claude-opus-5)  |  effort high</text>
+  <text x="18" y="604" fill="#767676" xml:space="preserve">Permisos: --permission-mode acceptEdits</text>
+  <text x="18" y="623" fill="#767676" xml:space="preserve">Argumentos nativos: NO escapa (lo hace PowerShell) -- modo fijado en 'Standard' por el script; PowerShell escapa</text>
+  <text x="18" y="642" fill="#f9f1a5" xml:space="preserve">  01-link-token-y-destino.md         Opus 5   effort xhigh   &lt;- effort sugerido (SUBE, confirmado)</text>
+  <text x="18" y="661" fill="#767676" xml:space="preserve">  02-modelo-de-la-invitacion.md      Opus 5   effort high</text>
+  <text x="18" y="680" fill="#767676" xml:space="preserve">  (...)</text>
+  <text x="18" y="699" fill="#767676" xml:space="preserve">  09-decisiones-y-cierre.md          Opus 5   effort high</text>
+  <text x="18" y="718" fill="#767676" xml:space="preserve">Cada sesion tiene Remote Control. Para pasar a la siguiente, cerra la actual con /exit.</text>
+  <text x="18" y="756" fill="#61d6d6" xml:space="preserve">== Sesion: 01-link-token-y-destino.md  [Opus 5, effort xhigh]  (/exit para pasar a la proxima) ==</text>
+  <text x="18" y="775" fill="#cccccc" xml:space="preserve">(...)</text>
+  <text x="18" y="794" fill="#16c60c" xml:space="preserve">Cerrada 01-link-token-y-destino.md (00:41:02).</text>
+  <text x="18" y="832" fill="#61d6d6" xml:space="preserve">== Sesion: 02-modelo-de-la-invitacion.md  [Opus 5, effort high]  (/exit para pasar a la proxima) ==</text>
+  <text x="18" y="851" fill="#cccccc" xml:space="preserve">(...)</text>
+  <text x="18" y="870" fill="#16c60c" xml:space="preserve">Cerrada 02-modelo-de-la-invitacion.md (00:33:57).</text>
+  <text x="18" y="908" fill="#cccccc" xml:space="preserve">(...)</text>
+  <text x="18" y="946" fill="#61d6d6" xml:space="preserve">== Sesion: 09-decisiones-y-cierre.md  [Opus 5, effort high]  (/exit para pasar a la proxima) ==</text>
+  <text x="18" y="965" fill="#cccccc" xml:space="preserve">(...)</text>
+  <text x="18" y="984" fill="#16c60c" xml:space="preserve">Cerrada 09-decisiones-y-cierre.md (00:21:40).</text>
+  <text x="18" y="1022" fill="#16c60c" xml:space="preserve">Todos los prompts se ejecutaron correctamente (9 sesiones, 06:12:44).</text>
+  <text x="18" y="1041" fill="#767676" xml:space="preserve">series-estado.txt: 'invitaciones' marcada terminada.</text>
+</svg>

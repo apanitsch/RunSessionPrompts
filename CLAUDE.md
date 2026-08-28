@@ -84,6 +84,8 @@ templates/                    lo que el instalador copia al destino
   prompt-instalacion-claude-md.md  el prompt de la sesion que corre la instalacion
 tests/Run-Tests.ps1           suite, sin dependencias
 docs/analisis-de-versiones.md de dónde salió cada cosa, y qué se descartó
+docs/gen-ejemplo-corrida.ps1  arma la captura de consola del ejemplo del README
+docs/ejemplo-corrida.svg      esa captura, generada — no se edita a mano
 CHANGELOG.md                  qué cambió en cada versión
 ```
 
