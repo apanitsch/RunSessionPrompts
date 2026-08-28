@@ -38,6 +38,10 @@
 
     Si una sesion sale con error (exit code != 0), corta la ejecucion.
 
+    Con -Unattended la serie corre SOLA, sin Remote Control y sin /exit: cada sesion se lanza en
+    modo no interactivo y es ella la que dice si la serie puede seguir. Es un modo distinto, se
+    pide explicitamente, y solo corre series escritas para el. Ver .PARAMETER Unattended.
+
     TODO lo que hay que decidir se pregunta AL PRINCIPIO, antes de lanzar la primera sesion:
     contestas una vez y despues te podes ir de la maquina, que es todo el punto de este script.
 
@@ -94,6 +98,60 @@
 
     Pasar -FullAuto junto con -Auto o con -PermissionMode es un error, no una precedencia
     silenciosa: son dos ordenes distintas sobre lo mismo.
+
+.PARAMETER Unattended
+    Corre la serie SIN SUPERVISION: no hay Remote Control, no hay /exit, y no hay nadie que
+    conteste. Cada sesion se lanza con 'claude -p' y, al terminar, DEVUELVE si la serie puede
+    seguir. Es opt-in: sin este parametro no cambia absolutamente nada del comportamiento de
+    siempre.
+
+    Lo que cambia:
+      - El modo de permisos es 'auto' (el modo "Auto" del desktop, donde un clasificador
+        decide en tu lugar) y NO se elige: pasar -PermissionMode o -FullAuto junto con
+        -Unattended es un error. Lo que el clasificador no aprueba queda denegado, la sesion no
+        puede hacer el trabajo, y lo reporta -- que es exactamente el freno de abajo.
+      - No se pasa --rc: Remote Control es interactivo por definicion. Las sesiones igual
+        quedan guardadas, con su nombre, y se pueden abrir despues con 'claude --resume'.
+      - La consola muestra lo que la sesion va haciendo (herramienta por herramienta) leyendo
+        el stream de eventos, no el dibujo de la TUI, que en -p no existe.
+
+    COMO DECIDE SI SIGUE. Se le pide a cada sesion un resultado estructurado:
+
+        { "result": "ok" | "stop", "reason": "<una o dos frases>" }
+
+    La serie sigue SOLO si se cumple todo:
+      1. la corrida termino con exit code 0,
+      2. la sesion dejo el resultado estructurado y parsea,
+      3. 'result' dice 'ok'.
+
+    Cualquier otra cosa FRENA la serie, incluida la ausencia de resultado. Es a proposito: si
+    la falta de senal se leyera como "segui", una sesion que se colgo o se fue por las ramas
+    arrastraria el error a todas las que vienen. El 'reason' se imprime siempre, tambien
+    cuando dice 'ok'.
+
+    QUE SERIES PUEDE CORRER. Solo las escritas sabiendo que esto existe. Cada prompt tiene que
+    declararlo en su encabezado:
+
+        <!-- runner-requerido: 2.0 -->
+
+    Sin esa marca, -Unattended no corre la serie. No es burocracia: un repo con las plantillas
+    de una version anterior no tiene documentado el contrato del JSON, asi que sus prompts no
+    pueden cumplirlo aunque quieran.
+
+    QUE SESION NO PUEDE CORRER SOLA. Un prompt que necesita un humano lo declara, y con eso el
+    runner se niega a correrlo en este modo:
+
+        <!-- automatico: no | hace deploy a produccion -->
+
+    El motivo despues del '|' es opcional y se imprime. La serie corre automatica hasta la
+    sesion anterior y FRENA ahi, limpio, diciendote como seguir a mano. Se detecta al arrancar:
+    antes de lanzar la primera sesion ya sabes donde va a parar.
+
+.PARAMETER MaxBudgetUsd
+    Techo de gasto por sesion, en dolares, que se pasa a '--max-budget-usd'. Solo aplica con
+    -Unattended, que es donde no hay nadie mirando: sin techo, una sesion trabada puede quemar
+    la noche entera. Cuando se pasa del techo, la sesion corta con exit code distinto de cero
+    y la serie frena.
 
 .PARAMETER Model
     Modelo BASE de la corrida: 'opus' (Opus 5, default) o 'sonnet' (Sonnet 5). Si no se pasa y
@@ -208,6 +266,14 @@
     .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Auto
 
 .EXAMPLE
+    # La serie corre SOLA, sin Remote Control: cada sesion decide si la siguiente arranca.
+    .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Unattended
+
+.EXAMPLE
+    # Lo mismo, con un techo de gasto por sesion.
+    .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Unattended -MaxBudgetUsd 5
+
+.EXAMPLE
     # La serie corre aislada en su propio worktree, partiendo de main.
     .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Worktree -BaseBranch main
 
@@ -269,6 +335,13 @@ param(
     # Atajo de '-PermissionMode auto'.
     [switch]$Auto,
 
+    # Corre la serie sin supervision: 'claude -p', sin Remote Control, y cada sesion devuelve
+    # si la serie puede seguir. Opt-in: sin esto, nada cambia. Ver la ayuda del parametro.
+    [switch]$Unattended,
+
+    # Techo de gasto por sesion (--max-budget-usd). Solo con -Unattended.
+    [double]$MaxBudgetUsd,
+
     # Alias corto: 'opus' / 'sonnet' apuntan siempre al ultimo de cada familia.
     # El id completo se resuelve mas abajo para dejarlo explicito en el log.
     [ValidateSet('opus', 'sonnet')]
@@ -310,11 +383,41 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '1.7.0'
+$script:RunnerVersion = '2.0.0'
+
+# La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
+# esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.
+$script:VersionMinimaDesatendida = [version]'2.0'
 
 if ($Version) {
     Write-Host "Run-SessionPrompts $script:RunnerVersion"
     exit 0
+}
+
+# --- En -Unattended el canal tiene que ser UTF-8, y hay que fijarlo YA -------
+# El resultado de cada sesion vuelve por el stdout de un proceso NATIVO, y PowerShell lo decodifica
+# con [Console]::OutputEncoding. Si esa no es UTF-8, un 'reason' con acentos llega roto -- y llega
+# roto EN SILENCIO, porque el JSON sigue parseando igual. Es la misma clase de falla que el escapado
+# de argumentos, del otro lado del canal.
+#
+# Va ACA ARRIBA, antes de la primera linea de salida del script, y no al lado del loop: MEDIDO en
+# pwsh 7.6.5 con -File, el host se queda con el encoding que tenia cuando escribio por primera vez.
+# Fijarlo despues arregla la LECTURA pero deja la ESCRITURA en la codificacion vieja, y entonces una
+# corrida redirigida a un archivo queda en la ANSI de la consola en vez de UTF-8.
+#
+# Es exactamente el mismo motivo por el que los prompts se leen con -Encoding UTF8 explicito: para
+# que la corrida no dependa de un default que puede ser otro en otra maquina.
+$encodingPrevio = $null
+if ($Unattended -and [Console]::OutputEncoding.CodePage -ne 65001) {
+    try {
+        $encodingPrevio = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    } catch {
+        Write-Host "No pude poner la consola en UTF-8 ([Console]::OutputEncoding = $([Console]::OutputEncoding.WebName))." -ForegroundColor Red
+        Write-Host "En -Unattended el resultado de cada sesion vuelve por ahi: con otra codificacion, un texto" -ForegroundColor Red
+        Write-Host "con acentos se corrompe sin que nada falle. Corre esto en una consola UTF-8." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # --- De donde sale una version nueva --------------------------------------
@@ -685,6 +788,31 @@ $script:ModosDePermiso = @('acceptEdits', 'auto', 'bypassPermissions', 'manual',
 $modoPasado     = $PSBoundParameters.ContainsKey('PermissionMode')
 $autoPasado     = $PSBoundParameters.ContainsKey('Auto') -and [bool]$Auto
 $fullAutoPasado = $PSBoundParameters.ContainsKey('FullAuto') -and [bool]$FullAuto
+$desatendida       = [bool]$Unattended
+
+# En -Unattended el modo de permisos NO se elige: es 'auto' y punto. Sin humano que conteste, un
+# clasificador que decide es el unico punto medio que queda -- 'acceptEdits' dejaria a la sesion
+# sin poder correr comandos, y 'bypassPermissions' la dejaria sin ningun freno. Pedir otro modo
+# es pedir algo que este modo no hace, asi que se corta en vez de ignorarlo.
+# (-Auto y '-PermissionMode auto' dicen lo mismo que ya va a pasar: no molestan.)
+if ($desatendida -and $fullAutoPasado) {
+    Write-Host "-Unattended corre siempre con '--permission-mode auto', y -FullAuto pide no preguntar nada." -ForegroundColor Red
+    Write-Host "Son dos cosas distintas. Sacale uno de los dos." -ForegroundColor DarkGray
+    exit 1
+}
+if ($desatendida -and $modoPasado -and $PermissionMode -ne 'auto') {
+    Write-Host "-Unattended corre siempre con '--permission-mode auto', y pediste '-PermissionMode $PermissionMode'." -ForegroundColor Red
+    Write-Host "Sacale el -PermissionMode, o corre la serie sin -Unattended." -ForegroundColor DarkGray
+    exit 1
+}
+if ($PSBoundParameters.ContainsKey('MaxBudgetUsd') -and -not $desatendida) {
+    Write-Host "-MaxBudgetUsd solo aplica con -Unattended: es el techo de una sesion que corre sin nadie mirando." -ForegroundColor Red
+    exit 1
+}
+if ($PSBoundParameters.ContainsKey('MaxBudgetUsd') -and $MaxBudgetUsd -le 0) {
+    Write-Host "-MaxBudgetUsd tiene que ser mayor que cero (llego '$MaxBudgetUsd')." -ForegroundColor Red
+    exit 1
+}
 
 if ($autoPasado -and $modoPasado -and $PermissionMode -ne 'auto') {
     Write-Host "-Auto es el atajo de '-PermissionMode auto', y pediste '-PermissionMode $PermissionMode'." -ForegroundColor Red
@@ -717,6 +845,22 @@ if (-not $fullAuto) {
     Write-Host "La configuracion pide 'fullAuto': true y ademas 'permissionMode'. Son dos cosas distintas." -ForegroundColor Red
     Write-Host "Dejate una sola en $script:ConfigPath." -ForegroundColor DarkGray
     exit 1
+}
+
+# -Unattended fija el modo, tambien contra la configuracion del repo. Ahi no se corta -- el archivo
+# es de todo el repo y -Unattended es de ESTA corrida --, pero se DICE: un modo que se ignora en
+# silencio es lo mismo que este script no hace en ningun otro lado.
+if ($desatendida) {
+    # Solo lo que el ARCHIVO pide: el 'acceptEdits' que sale del default no lo puso nadie, y
+    # avisar que se pisa un valor que nadie escribio es ruido.
+    $pisado = if ($fullAuto -and $null -ne (Get-ConfigValue 'fullAuto')) { "'fullAuto': true" }
+              elseif ($modoPermiso -ne 'auto' -and $null -ne (Get-ConfigValue 'permissionMode')) { "'permissionMode': '$modoPermiso'" }
+              else { '' }
+    if ($pisado -and -not $modoPasado -and -not $autoPasado) {
+        Write-Host "-Unattended: la configuracion del repo dice $pisado, y en este modo el permiso es 'auto'. Uso 'auto'." -ForegroundColor Yellow
+    }
+    $fullAuto    = $false
+    $modoPermiso = 'auto'
 }
 
 # Los tres parametros del worktree no hacen NADA si la serie no corre aislada. Pasarlos y que no
@@ -1167,6 +1311,156 @@ if ($fullAuto) {
     $claudeArgs += @('--permission-mode', $modoPermiso)
 }
 
+# --- El contrato de -Unattended ---------------------------------------------
+# En este modo la sesion no habla con nadie: lo unico que el runner puede leer de ella es el
+# resultado estructurado. '--json-schema' no hace que el modelo imprima JSON en su prosa -- fuerza
+# una llamada a la herramienta StructuredOutput que el propio CLI valida --, asi que el resultado
+# no comparte canal con el texto y no puede confundirse con nada que la sesion haya escrito.
+#
+# El esquema dice la FORMA; el system prompt de abajo dice CUANDO va cada valor. Las dos mitades
+# tienen que viajar juntas: un esquema sin la regla deja a la sesion adivinando que es "ok".
+$script:EsquemaResultado = '{"type":"object","properties":{"result":{"type":"string","enum":["ok","stop"]},"reason":{"type":"string"}},"required":["result","reason"],"additionalProperties":false}'
+
+# Va por --append-system-prompt y no por el README del repo destino a proposito: asi llega
+# SIEMPRE, en todas las sesiones, sin depender de que el agente lea un archivo ni de que el autor
+# del prompt se haya acordado. Y viaja versionado con el runner, que es lo que lo hace servir en
+# cualquier repo sin editar nada.
+$script:ContratoDesatendida = @'
+Esta sesion corre SIN SUPERVISION HUMANA, como parte de una serie que un runner ejecuta de
+punta a punta. Nadie esta mirando la consola mientras trabajas y nadie puede contestarte.
+
+Al terminar devolves un resultado estructurado con dos campos:
+
+  result: "ok"   si hiciste lo que el prompt pedia y la proxima sesion de la serie puede
+                 arrancar sobre lo que dejaste.
+          "stop" si NO lo lograste, si quedo a medias, o si encontraste algo que hace que
+                 seguir con la proxima sesion sea una mala idea.
+
+  reason: una o dos frases para un humano que va a leer esto despues, sin la sesion a la
+          vista. Va SIEMPRE, tambien cuando result es "ok": ahi resumis que hiciste.
+
+Ante la duda, "stop". Una serie frenada de mas cuesta una corrida; una serie que sigue sobre
+una sesion que fallo le arrastra el error a todas las que vienen.
+
+Si el prompt necesita una decision humana, no la inventes: devolve "stop" diciendo que
+decision hace falta. Lo mismo si te falta un permiso, una credencial o un dato que no esta.
+'@
+
+# Un resumen de una linea de lo que la herramienta va a hacer. Lo que la TUI dibuja (cajas,
+# diffs, spinners) no viaja por el stream: viaja la conversacion, y el dibujo lo hace la TUI, que
+# en -p no existe. Asi que el formato de consola de este modo lo define el runner.
+function Get-ResumenHerramienta($nombre, $entrada) {
+    if ($null -eq $entrada) { return '' }
+    $valor = switch ($nombre) {
+        'Bash'         { $entrada.command }
+        'Read'         { $entrada.file_path }
+        'Write'        { $entrada.file_path }
+        'Edit'         { $entrada.file_path }
+        'NotebookEdit' { $entrada.notebook_path }
+        'Glob'         { $entrada.pattern }
+        'Grep'         { $entrada.pattern }
+        'Agent'        { $entrada.description }
+        'Task'         { $entrada.description }
+        'WebFetch'     { $entrada.url }
+        default        { ($entrada | ConvertTo-Json -Compress -Depth 4) }
+    }
+    if ($null -eq $valor) { return '' }
+    $unaLinea = ([string]$valor) -replace '\s+', ' '
+    if ($unaLinea.Length -gt 100) { return $unaLinea.Substring(0, 97) + '...' }
+    return $unaLinea
+}
+
+# Corre UNA sesion desatendida -- headless del lado del CLI -- y va imprimiendo lo que hace,
+# leyendo el stream de eventos NDJSON.
+# Devuelve el exit code, el resultado estructurado (o $null si no llego), y lo ultimo que la
+# sesion estaba haciendo -- que es lo que hace falta para diagnosticar una sesion que termino
+# sin dejar resultado.
+function Invoke-SesionDesatendida([string]$exe, [string[]]$argumentos) {
+    # Con alcance 'script' a proposito: el bloque de ForEach-Object corre en un alcance HIJO, y
+    # una asignacion comun ahi adentro crearia una variable nueva en vez de tocar esta. El
+    # resultado se perderia y toda sesion se leeria como "no dejo resultado".
+    $script:DsEstructurado = $null
+    $script:DsHuboResult   = $false
+    $script:DsUltimo       = ''
+
+    & $exe @argumentos | ForEach-Object {
+        $linea = "$_"
+        if ([string]::IsNullOrWhiteSpace($linea)) { return }
+
+        $ev = $null
+        try { $ev = $linea | ConvertFrom-Json } catch { }
+
+        # Una linea que no es JSON no se descarta: puede ser un aviso del CLI, y tragarselo
+        # seria degradar en silencio.
+        if ($null -eq $ev) {
+            Write-Host "    $linea" -ForegroundColor DarkGray
+            return
+        }
+
+        # InvariantCulture: en un formato custom, ':' no es un literal sino el SEPARADOR HORARIO de
+        # la cultura. Con otra configuracion regional la hora del log saldria con otro caracter.
+        $hora = (Get-Date).ToString('HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+
+        switch ($ev.type) {
+            'assistant' {
+                foreach ($bloque in @($ev.message.content)) {
+                    if ($bloque.type -eq 'text' -and -not [string]::IsNullOrWhiteSpace($bloque.text)) {
+                        $texto = $bloque.text.Trim()
+                        Write-Host "  [$hora] $texto" -ForegroundColor Gray
+                        # Lo ultimo que la sesion dijo, recortado: es el diagnostico de una
+                        # sesion que despues termina sin dejar resultado.
+                        $corto = ($texto -replace '\s+', ' ')
+                        if ($corto.Length -gt 80) { $corto = $corto.Substring(0, 77) + '...' }
+                        $script:DsUltimo = "dijo `"$corto`""
+                    } elseif ($bloque.type -eq 'tool_use' -and $bloque.name -eq 'StructuredOutput') {
+                        # Es como el CLI implementa --json-schema, no trabajo de la sesion. Y su
+                        # contenido es el mismo 'reason' que se imprime unas lineas mas abajo.
+                        continue
+                    } elseif ($bloque.type -eq 'tool_use') {
+                        $resumen = Get-ResumenHerramienta $bloque.name $bloque.input
+                        Write-Host ("  [{0}] {1,-14} {2}" -f $hora, $bloque.name, $resumen) -ForegroundColor DarkCyan
+                        $script:DsUltimo = "$($bloque.name) $resumen"
+                    }
+                }
+            }
+            'user' {
+                foreach ($bloque in @($ev.message.content)) {
+                    if ($bloque.type -eq 'tool_result' -and $bloque.is_error) {
+                        Write-Host "  [$hora] la herramienta fallo" -ForegroundColor DarkYellow
+                    }
+                }
+            }
+            'result' {
+                $script:DsHuboResult   = $true
+                $script:DsEstructurado = $ev.structured_output
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        ExitCode     = $LASTEXITCODE
+        HuboResult   = $script:DsHuboResult
+        Estructurado = $script:DsEstructurado
+        Ultimo       = $script:DsUltimo
+    }
+}
+
+$argsDesatendida = @()
+if ($desatendida) {
+    $argsDesatendida = @(
+        '-p',
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--json-schema', $script:EsquemaResultado,
+        '--append-system-prompt', $script:ContratoDesatendida
+    )
+    if ($MaxBudgetUsd -gt 0) {
+        # InvariantCulture a mano: con la configuracion regional de por aca, "$MaxBudgetUsd"
+        # sale con COMA decimal y el CLI lo rechaza (o peor, lo lee distinto).
+        $argsDesatendida += @('--max-budget-usd', $MaxBudgetUsd.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+}
+
 # --- Como viaja el prompt hasta claude ------------------------------------
 # El prompt entero viaja como UN argumento, y casi todos citan algo entre comillas, traen JSON
 # o XML con sus escapes, y TODOS son multilinea. Que eso cruce intacto la linea de comandos de
@@ -1407,8 +1701,47 @@ foreach ($e in $efforts) { $etiquetaEffort[$e] = $e }
 # Lee una marca del prompt. El patron es ANCHO a proposito -- captura cualquier valor y despues
 # valida -- para que '<!-- effort-sugerido: alto -->' corte con un error y no se ignore en
 # silencio, que es como un prompt terminaria corriendo con algo distinto de lo que pidio.
+# --- Un prompt que no este en UTF-8 no se lee "mas o menos" ----------------
+# El runner lee los .md con -Encoding UTF8 explicito. Si el archivo esta guardado en la ANSI de
+# Windows (cp1252, cp437), los bytes de los acentos no forman UTF-8 valido y .NET los reemplaza por
+# U+FFFD: la sesion recibe "ejecuci<?>n" y NADA falla. Es la misma clase de degradacion silenciosa
+# que este script existe para no cometer, del lado de la entrada.
+#
+# MEDIDO: UTF-8 con y sin BOM, ASCII puro y UTF-16 CON BOM se leen bien (PowerShell respeta el BOM
+# aunque se le pida UTF8); cp1252 y cp437 con acentos pierden un caracter por acento.
+#
+# La deteccion es exacta, no una adivinanza: se intenta decodificar en UTF-8 ESTRICTO. Texto ASCII
+# es UTF-8 valido, asi que un archivo sin acentos nunca molesta; y una secuencia de bytes cp1252
+# con acentos practicamente nunca es UTF-8 valido. Devuelve '' si esta bien, o el motivo.
+function Test-PromptNoEsUtf8([string]$ruta) {
+    $bytes = [System.IO.File]::ReadAllBytes($ruta)
+    if ($bytes.Length -lt 2) { return '' }
+
+    # UTF-16 CON BOM: PowerShell lo respeta y lo lee bien. No es problema.
+    $tieneBomUtf16 = ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+    if ($tieneBomUtf16) { return '' }
+
+    # Sin BOM y con bytes NUL: es UTF-16 sin marcar. Pasaria la validacion de UTF-8 (el NUL es un
+    # byte UTF-8 valido) y se leeria como basura, asi que se chequea aparte.
+    if ($bytes -contains 0) { return 'tiene bytes NUL: parece UTF-16 sin BOM' }
+
+    $estricto = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        [void]$estricto.GetString($bytes)
+        return ''
+    } catch {
+        return 'no es UTF-8 valido: parece guardado en la codificacion ANSI de Windows'
+    }
+}
+
+# NOTA sobre el '\r?' del final de los dos patrones de abajo: '$' en modo multilinea matchea
+# ANTES del '\n', y en un .md con fin de linea CRLF queda un '\r' en el medio que '[ \t]*' no come.
+# MEDIDO: sin ese '\r?', en un repo destino cuyos .md se checkoutean en CRLF -- el default de Git
+# para Windows cuando el repo no trae .gitattributes -- NINGUNA marca matchea: ni modelo-sugerido,
+# ni effort-sugerido, ni las dos de -Unattended. Una marca que no se aplica en silencio es
+# exactamente lo que este script no hace.
 function Get-MarcaSugerida([string]$texto, [string]$marca, [string[]]$validos, [string]$archivo) {
-    $m = [regex]::Match($texto, "(?im)^[ \t]*<!--[ \t]*(?:$marca):[ \t]*(\S+)[ \t]*-->[ \t]*$")
+    $m = [regex]::Match($texto, "(?im)^[ \t]*<!--[ \t]*(?:$marca):[ \t]*(\S+)[ \t]*-->[ \t]*\r?$")
     if (-not $m.Success) { return $null }
 
     $valor = $m.Groups[1].Value.ToLowerInvariant()
@@ -1418,6 +1751,22 @@ function Get-MarcaSugerida([string]$texto, [string]$marca, [string[]]$validos, [
         exit 1
     }
     return $valor
+}
+
+# Las dos marcas de -Unattended. Mismo criterio ANCHO que la de arriba -- captura cualquier valor y
+# despues valida --, mas un motivo libre opcional despues de un '|':
+#
+#     <!-- runner-requerido: 2.0 -->
+#     <!-- automatico: no | hace deploy a produccion -->
+#
+# Devuelve $null si la marca no esta, o un objeto con Valor (en minusculas) y Motivo.
+function Get-MarcaConMotivo([string]$texto, [string]$marca) {
+    $m = [regex]::Match($texto, "(?im)^[ \t]*<!--[ \t]*(?:$marca):[ \t]*([^|\s]+)[ \t]*(?:\|[ \t]*(.*?))?[ \t]*-->[ \t]*\r?$")
+    if (-not $m.Success) { return $null }
+    return [pscustomobject]@{
+        Valor  = $m.Groups[1].Value.ToLowerInvariant()
+        Motivo = $m.Groups[2].Value.Trim()
+    }
 }
 
 # La regla de arriba, una sola vez, para el modelo y para el effort.
@@ -1459,6 +1808,111 @@ function Resolve-Sugerido([string]$nombrePrompt, [string]$que, [string]$sugerido
     exit 1
 }
 
+# --- Antes que nada: que los prompts esten en UTF-8 -----------------------
+# Va PRIMERO, incluso antes de leer las marcas: leer una marca de un archivo mal decodificado no
+# tiene sentido. Todos los problemas juntos, como con la configuracion.
+$problemasEncoding = @()
+foreach ($p in $prompts) {
+    $motivo = Test-PromptNoEsUtf8 $p.FullName
+    if ($motivo) { $problemasEncoding += "$($p.Name): $motivo" }
+}
+
+if ($problemasEncoding.Count -gt 0) {
+    Write-Host "Estos prompts no estan guardados en UTF-8:" -ForegroundColor Red
+    foreach ($m in $problemasEncoding) { Write-Host "  - $m" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "El runner los lee como UTF-8, asi que sus acentos llegarian a la sesion como" -ForegroundColor DarkGray
+    Write-Host "caracteres de reemplazo, sin que nada falle. Para convertir uno:" -ForegroundColor DarkGray
+    Write-Host "  `$t = Get-Content -LiteralPath <archivo> -Raw -Encoding ansi" -ForegroundColor DarkGray
+    Write-Host "  Set-Content -LiteralPath <archivo> -Value `$t -Encoding utf8NoBOM" -ForegroundColor DarkGray
+    exit 1
+}
+
+# --- Las marcas de -Unattended, antes de preguntar nada ---------------------
+# Se VALIDAN siempre (una marca mal escrita es un error aunque la corrida sea interactiva) y se
+# EXIGEN solo en -Unattended. Va antes del plan porque el plan puede parar a preguntar por el
+# modelo o el effort: descubrir recien ahi que la serie ni siquiera puede correr sola seria
+# hacerte contestar preguntas de una corrida que no va a existir.
+# Todos los problemas juntos, como con la configuracion: uno por corrida es peor que verlos todos.
+$marcasDesatendida  = @{}
+$problemasMarcas = @()
+
+foreach ($p in $prompts) {
+    $textoMarcas = Get-Content -LiteralPath $p.FullName -Raw -Encoding UTF8
+
+    $marcaVersion = Get-MarcaConMotivo $textoMarcas 'runner-requerido|required-runner'
+    $marcaAuto    = Get-MarcaConMotivo $textoMarcas 'automatico|automatic'
+
+    $versionPedida = $null
+    if ($marcaVersion) {
+        # '2' se lee como '2.0': [version] pide dos numeros y no vale hacer fallar a alguien
+        # por eso.
+        $crudo = if ($marcaVersion.Valor -match '^\d+$') { "$($marcaVersion.Valor).0" } else { $marcaVersion.Valor }
+        try {
+            $versionPedida = [version]$crudo
+        } catch {
+            $problemasMarcas += "$($p.Name): 'runner-requerido: $($marcaVersion.Valor)' no es un numero de version."
+        }
+    }
+
+    $requiereHumano = $false
+    $motivoHumano   = ''
+    if ($marcaAuto) {
+        if ($marcaAuto.Valor -eq 'no') {
+            $requiereHumano = $true
+            $motivoHumano   = $marcaAuto.Motivo
+        } elseif ($marcaAuto.Valor -ne 'si') {
+            $problemasMarcas += "$($p.Name): 'automatico: $($marcaAuto.Valor)' no es un valor valido. Validos: si, no."
+        }
+    }
+
+    $marcasDesatendida[$p.Name] = [pscustomobject]@{
+        Version        = $versionPedida
+        RequiereHumano = $requiereHumano
+        MotivoHumano   = $motivoHumano
+    }
+}
+
+if ($problemasMarcas.Count -gt 0) {
+    Write-Host "Hay marcas mal escritas en los prompts:" -ForegroundColor Red
+    foreach ($m in $problemasMarcas) { Write-Host "  - $m" -ForegroundColor Red }
+    Write-Host "Una marca que se ignora en silencio es justo lo que este script no hace." -ForegroundColor DarkGray
+    exit 1
+}
+
+if ($desatendida) {
+    $sinMarca = @($prompts | Where-Object { $null -eq $marcasDesatendida[$_.Name].Version })
+    if ($sinMarca.Count -gt 0) {
+        Write-Host "-Unattended solo corre series escritas para correr solas, y estos prompts no lo declaran:" -ForegroundColor Red
+        foreach ($p in $sinMarca) { Write-Host "  - $($p.Name)" -ForegroundColor Red }
+        Write-Host "" -ForegroundColor Red
+        Write-Host "Cada prompt de la serie tiene que traer en su encabezado:" -ForegroundColor DarkGray
+        Write-Host "    <!-- runner-requerido: $($script:VersionMinimaDesatendida) -->" -ForegroundColor DarkGray
+        Write-Host "Es lo que dice que el prompt conoce el contrato del resultado ({ result, reason })." -ForegroundColor DarkGray
+        Write-Host "Sin -Unattended la serie corre normal, con Remote Control y /exit." -ForegroundColor DarkGray
+        exit 1
+    }
+
+    $viejos = @($prompts | Where-Object { $marcasDesatendida[$_.Name].Version -lt $script:VersionMinimaDesatendida })
+    if ($viejos.Count -gt 0) {
+        Write-Host "-Unattended necesita prompts escritos para la $($script:VersionMinimaDesatendida) o posterior:" -ForegroundColor Red
+        foreach ($p in $viejos) {
+            Write-Host "  - $($p.Name) declara $($marcasDesatendida[$p.Name].Version)" -ForegroundColor Red
+        }
+        exit 1
+    }
+
+    $nuevos = @($prompts | Where-Object { $marcasDesatendida[$_.Name].Version -gt [version]$script:RunnerVersion })
+    if ($nuevos.Count -gt 0) {
+        Write-Host "Estos prompts piden un runner mas nuevo que el instalado ($script:RunnerVersion):" -ForegroundColor Red
+        foreach ($p in $nuevos) {
+            Write-Host "  - $($p.Name) pide $($marcasDesatendida[$p.Name].Version)" -ForegroundColor Red
+        }
+        Write-Host "Actualiza con: pwsh -File .\Run-SessionPrompts.ps1 -Update" -ForegroundColor DarkGray
+        exit 1
+    }
+}
+
 $plan = @()
 foreach ($p in $prompts) {
     # -Encoding UTF8 por el mismo motivo que al leer el prompt: los .md no tienen BOM.
@@ -1473,17 +1927,42 @@ foreach ($p in $prompts) {
     $notas = @($decModelo.Nota, $decEffort.Nota) | Where-Object { $_ }
 
     $plan += [pscustomobject]@{
-        Prompt = $p
-        Modelo = $modelos | Where-Object { $_.Alias -eq $decModelo.Alias } | Select-Object -First 1
-        Effort = $decEffort.Alias
-        Nota   = ($notas -join '; ')
+        Prompt         = $p
+        Modelo         = $modelos | Where-Object { $_.Alias -eq $decModelo.Alias } | Select-Object -First 1
+        Effort         = $decEffort.Alias
+        Nota           = ($notas -join '; ')
+        RequiereHumano = $marcasDesatendida[$p.Name].RequiereHumano
+        MotivoHumano   = $marcasDesatendida[$p.Name].MotivoHumano
+    }
+}
+
+# --- La sesion que pide humano corta la corrida automatica ----------------
+# Un prompt marcado 'automatico: no' no puede correr sin nadie. La serie corre automatica hasta
+# la anterior y FRENA ahi, limpio: quedarse esperando a que vuelvas seria justo lo que este
+# script promete que no pasa. Se decide ACA, antes de lanzar nada, asi sabes de entrada donde
+# va a parar.
+$frenoHumano = $null
+if ($desatendida) {
+    for ($i = 0; $i -lt $plan.Count; $i++) {
+        if ($plan[$i].RequiereHumano) {
+            $frenoHumano = $plan[$i]
+            if ($i -eq 0) {
+                $motivo = if ($frenoHumano.MotivoHumano) { ": $($frenoHumano.MotivoHumano)" } else { "" }
+                Write-Host "$($frenoHumano.Prompt.Name) esta marcada 'automatico: no'$motivo" -ForegroundColor Red
+                Write-Host "Es la primera de la corrida, asi que en -Unattended no queda nada que correr." -ForegroundColor Red
+                Write-Host "Corre la serie sin -Unattended, o arranca despues de esa sesion con -StartFrom." -ForegroundColor DarkGray
+                exit 1
+            }
+            $plan = @($plan[0..($i - 1)])
+            break
+        }
     }
 }
 
 # --- El plan, antes de arrancar -------------------------------------------
 $desde = if ($StartFrom -gt 0) { " (desde el $StartFrom)" } else { "" }
 Write-Host ""
-Write-Host "Ejecutando $($prompts.Count) prompts de la serie '$serie'$desde" -ForegroundColor Cyan
+Write-Host "Ejecutando $($plan.Count) prompts de la serie '$serie'$desde" -ForegroundColor Cyan
 Write-Host "Prompts: $PromptsPath" -ForegroundColor DarkGray
 if ($usaWorktree) {
     Write-Host "Worktree (directorio de trabajo): $worktreePath  |  rama: $branch (desde $BaseBranch)" -ForegroundColor DarkGray
@@ -1493,6 +1972,12 @@ if ($usaWorktree) {
 Write-Host "Tope de la corrida: $($modelo.Etiqueta) ($($modelo.Id))  |  effort $Effort" -ForegroundColor DarkGray
 $quePermisos = if ($fullAuto) { '--dangerously-skip-permissions (no pregunta nada)' } else { "--permission-mode $modoPermiso" }
 Write-Host "Permisos: $quePermisos" -ForegroundColor DarkGray
+if ($desatendida) {
+    Write-Host "Modo: -Unattended -- sin Remote Control y sin /exit; cada sesion dice si la serie sigue." -ForegroundColor Yellow
+    if ($MaxBudgetUsd -gt 0) {
+        Write-Host "Techo de gasto por sesion: USD $MaxBudgetUsd (--max-budget-usd)" -ForegroundColor DarkGray
+    }
+}
 if ($script:ConfigPath) {
     Write-Host "Configuracion: $script:ConfigPath" -ForegroundColor DarkGray
 }
@@ -1510,15 +1995,59 @@ foreach ($item in $plan) {
     Write-Host ("  {0,-34} {1,-8} effort {2,-6}{3}" -f $item.Prompt.Name, $item.Modelo.Etiqueta, $item.Effort, $detalle) -ForegroundColor $color
 }
 
+if ($frenoHumano) {
+    $motivo = if ($frenoHumano.MotivoHumano) { " ($($frenoHumano.MotivoHumano))" } else { "" }
+    $numero = Get-PromptNumber $frenoHumano.Prompt.Name
+    Write-Host ""
+    Write-Host "La corrida automatica FRENA antes de $($frenoHumano.Prompt.Name)$motivo" -ForegroundColor Yellow
+    Write-Host "Esa sesion esta marcada 'automatico: no': necesita un humano." -ForegroundColor DarkGray
+    Write-Host "Cuando termine lo de arriba, seguis a mano con:" -ForegroundColor DarkGray
+    Write-Host "  pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath `"$PromptsPath`" -StartFrom $numero" -ForegroundColor DarkGray
+}
+
 if ($DryRun) {
     Write-Host ""
     Write-Host "-DryRun: no se lanza ninguna sesion. Lo que se ejecutaria:" -ForegroundColor Yellow
     foreach ($item in $plan) {
         $sessionName = "$serie/$($item.Prompt.BaseName)"
-        $linea = "$ClaudeCommand --model $($item.Modelo.Id) --effort $($item.Effort) $($claudeArgs -join ' ') --rc $sessionName --name $sessionName <prompt de $($item.Prompt.Name)>"
+        $comunes = "$ClaudeCommand --model $($item.Modelo.Id) --effort $($item.Effort) $($claudeArgs -join ' ')"
+        $linea = if ($desatendida) {
+            # El esquema y el contrato van como marcador: pegados enteros, y por cada sesion, la
+            # linea deja de poder leerse. Estan completos en el README y en el propio script.
+            $techo = if ($MaxBudgetUsd -gt 0) { " --max-budget-usd $($MaxBudgetUsd.ToString([System.Globalization.CultureInfo]::InvariantCulture))" } else { "" }
+            "$comunes -p --output-format stream-json --verbose --json-schema <esquema del resultado>" +
+            " --append-system-prompt <contrato de -Unattended>$techo" +
+            " --session-id <guid> --name $sessionName <prompt de $($item.Prompt.Name)>"
+        } else {
+            "$comunes --rc $sessionName --name $sessionName <prompt de $($item.Prompt.Name)>"
+        }
         Write-Host "  $linea" -ForegroundColor DarkGray
     }
     exit 0
+}
+
+# --- -Unattended se confirma a mano -----------------------------------------
+# Es lo ultimo que se pregunta y va ANTES del worktree: si abortas aca, no queda nada creado.
+# Se pide escribir 'si' entero, no una tecla: este modo lanza una serie completa contra el repo
+# sin nadie mirando, y eso no se acepta de un Enter distraido.
+if ($desatendida) {
+    Write-Host ""
+    Write-Host "== -Unattended: la serie corre sola ==" -ForegroundColor Yellow
+    Write-Host "  - NO hay Remote Control: no vas a poder mirar ni intervenir desde el celular" -ForegroundColor Yellow
+    Write-Host "    mientras corre. Las sesiones quedan guardadas y se abren despues con 'claude --resume'." -ForegroundColor Yellow
+    Write-Host "  - Los permisos los decide el clasificador de Claude Code (--permission-mode auto), no vos." -ForegroundColor Yellow
+    Write-Host "  - Cada sesion dice si la serie sigue. Si una no deja resultado, la serie FRENA ahi." -ForegroundColor Yellow
+    $cuantas = if ($plan.Count -eq 1) { "Es 1 sesion" } else { "Son $($plan.Count) sesiones" }
+    Write-Host "  - $cuantas sobre $workDir" -ForegroundColor Yellow
+    if ($MaxBudgetUsd -le 0) {
+        Write-Host "  - Sin techo de gasto: una sesion trabada puede correr sin limite. Se pone con -MaxBudgetUsd." -ForegroundColor Yellow
+    }
+    Write-Host ""
+    $confirma = Read-Host "Escribi 'si' para arrancar (cualquier otra cosa aborta)"
+    if ("$confirma".Trim().ToLowerInvariant() -ne 'si') {
+        Write-Host "Abortado: no se lanzo ninguna sesion." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # --- Crear o reutilizar el worktree de la serie ---------------------------
@@ -1555,7 +2084,11 @@ if ($usaWorktree) {
     }
 }
 
-Write-Host "Cada sesion tiene Remote Control. Para pasar a la siguiente, cerra la actual con /exit.`n" -ForegroundColor DarkGray
+if ($desatendida) {
+    Write-Host "Sin Remote Control y sin /exit: cada sesion termina sola y dice si la serie sigue.`n" -ForegroundColor DarkGray
+} else {
+    Write-Host "Cada sesion tiene Remote Control. Para pasar a la siguiente, cerra la actual con /exit.`n" -ForegroundColor DarkGray
+}
 
 # --- El loop --------------------------------------------------------------
 $reloj = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1568,7 +2101,8 @@ foreach ($item in $plan) {
     $modeloSesion = $item.Modelo
     $effortSesion = $item.Effort
 
-    Write-Host "== Sesion: $($p.Name)  [$($modeloSesion.Etiqueta), effort $effortSesion]  (/exit para pasar a la proxima) ==" -ForegroundColor Cyan
+    $comoTermina = if ($desatendida) { 'termina sola' } else { '/exit para pasar a la proxima' }
+    Write-Host "== Sesion: $($p.Name)  [$($modeloSesion.Etiqueta), effort $effortSesion]  ($comoTermina) ==" -ForegroundColor Cyan
 
     # El contenido del prompt va como argumento posicional (mensaje inicial), NO por stdin:
     # si se pipea, claude pierde la TTY y no seria interactivo/RC.
@@ -1598,9 +2132,16 @@ foreach ($item in $plan) {
     # llega a setearlo.
     $global:LASTEXITCODE = 0
 
-    # La lista completa, para poder medirla antes de intentar lanzarla.
-    $argsSesion = @('--model', $modeloSesion.Id, '--effort', $effortSesion) + $claudeArgs +
-                  @('--rc', $sessionName, '--name', $sessionName, $arg)
+    # La lista completa, para poder medirla antes de intentar lanzarla. En -Unattended el contrato
+    # y el esquema tambien ocupan lugar en la linea: por eso se miden con todo lo demas y no
+    # aparte.
+    $sessionId = [guid]::NewGuid().ToString()
+    $argsSesion = @('--model', $modeloSesion.Id, '--effort', $effortSesion) + $claudeArgs
+    $argsSesion += if ($desatendida) {
+        $argsDesatendida + @('--session-id', $sessionId, '--name', $sessionName, $arg)
+    } else {
+        @('--rc', $sessionName, '--name', $sessionName, $arg)
+    }
 
     $entra, $largoLinea, $techoLinea = Test-EntraEnLaLineaDeComandos $ClaudeCommand $argsSesion
     if (-not $entra) {
@@ -1611,7 +2152,14 @@ foreach ($item in $plan) {
         exit 1
     }
 
-    & $ClaudeCommand @argsSesion
+    $salida = $null
+    if ($desatendida) {
+        Write-Host "   claude --resume $sessionId   (para abrirla despues)" -ForegroundColor DarkGray
+        $salida = Invoke-SesionDesatendida $ClaudeCommand $argsSesion
+        $global:LASTEXITCODE = $salida.ExitCode
+    } else {
+        & $ClaudeCommand @argsSesion
+    }
 
     $relojSesion.Stop()
 
@@ -1620,16 +2168,58 @@ foreach ($item in $plan) {
         exit $LASTEXITCODE
     }
 
+    # --- El semaforo de -Unattended -----------------------------------------
+    # Sigue SOLO si se cumple todo: exit code 0 (ya chequeado), resultado estructurado presente,
+    # y 'result' en 'ok'. Cualquier otra cosa frena. Los dos diagnosticos se imprimen DISTINTO
+    # a proposito: "la sesion pidio frenar" es el mecanismo funcionando, "la sesion no dejo
+    # resultado" es una sesion que se colgo o se fue por las ramas, y no se arreglan igual.
+    if ($desatendida) {
+        $estructurado = $salida.Estructurado
+        if ($null -eq $estructurado) {
+            $donde = if ($salida.Ultimo) { " Lo ultimo que hizo: $($salida.Ultimo)." } else { "" }
+            $quePaso = if ($salida.HuboResult) {
+                "termino sin el resultado estructurado"
+            } else {
+                "termino sin dejar ningun resultado"
+            }
+            Write-Host "$($p.Name) $quePaso. Corto la serie.$donde" -ForegroundColor Red
+            Write-Host "  Para ver que paso: claude --resume $sessionId" -ForegroundColor DarkGray
+            exit 1
+        }
+
+        $veredicto = "$($estructurado.result)".Trim().ToLowerInvariant()
+        $porque    = "$($estructurado.reason)".Trim()
+
+        if ($veredicto -ne 'ok') {
+            $comoLoDijo = if ($veredicto -eq 'stop') { "pidio frenar" } else { "devolvio 'result: $veredicto', que no es un valor que este runner entienda" }
+            Write-Host "$($p.Name) $comoLoDijo. Corto la serie." -ForegroundColor Red
+            if ($porque) { Write-Host "  $porque" -ForegroundColor Yellow }
+            Write-Host "  Para retomar ahi: -StartFrom $(Get-PromptNumber $p.Name)" -ForegroundColor DarkGray
+            Write-Host "  Para ver que paso: claude --resume $sessionId" -ForegroundColor DarkGray
+            exit 1
+        }
+
+        if ($porque) { Write-Host "  $porque" -ForegroundColor DarkGray }
+    }
+
     Write-Host ("Cerrada {0} ({1:hh\:mm\:ss}).`n" -f $p.Name, $relojSesion.Elapsed) -ForegroundColor Green
 }
 
 }
 finally {
     Pop-Location
+    if ($encodingPrevio) { try { [Console]::OutputEncoding = $encodingPrevio } catch { } }
 }
 
 $reloj.Stop()
 Write-Host ("Todos los prompts se ejecutaron correctamente ({0} sesiones, {1:hh\:mm\:ss})." -f $plan.Count, $reloj.Elapsed) -ForegroundColor Green
+
+if ($frenoHumano) {
+    $numero = Get-PromptNumber $frenoHumano.Prompt.Name
+    Write-Host ""
+    Write-Host "La serie NO termino: $($frenoHumano.Prompt.Name) necesita un humano." -ForegroundColor Yellow
+    Write-Host "  pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath `"$PromptsPath`" -StartFrom $numero" -ForegroundColor DarkGray
+}
 
 if ($usaWorktree) {
     Write-Host ""
@@ -1651,4 +2241,19 @@ $ultimoDeLaSerie = @(Get-ChildItem -LiteralPath $PromptsPath -Filter *.md |
 
 if ($ultimoDeLaSerie.Count -gt 0 -and $plan[-1].Prompt.Name -eq $ultimoDeLaSerie[0].Name) {
     Set-SerieTerminada $serie
+}
+
+# --- Que -Unattended existe ------------------------------------------------
+# Al FINAL de una corrida que salio bien, y una sola vez: el que acaba de cerrar nueve sesiones a
+# mano es justo el que necesita enterarse, y ahi ya no esta esperando nada. Por sesion seria
+# hostigarlo, y en una corrida que fallo seria lo ultimo que quiere leer (esa sale por otro lado).
+#
+# No se ofrece con una sola sesion: ahi no hay "cada sesion" que moleste.
+#
+# Y NO lleva un comando para copiar: esta serie acaba de terminar, nadie la va a correr de nuevo.
+# Lo unico util aca es que el modo existe.
+if (-not $desatendida -and $plan.Count -gt 1) {
+    Write-Host ""
+    Write-Host "Si cerrar con /exit te molesta, -Unattended corre la serie sola, pero te quedas sin" -ForegroundColor Yellow
+    Write-Host "Remote Control mientras corre." -ForegroundColor Yellow
 }

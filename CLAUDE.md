@@ -56,6 +56,41 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   modo, corré la suite: es lo único que separa este script de degradar prompts en silencio.
 - **`-Worktree` es opcional y viene apagado.** Una de las copias de origen lo hacía siempre; la
   mayoría de los repos no lo necesita.
+- **`-Unattended` es opt-in, se confirma a mano, y el modo de permisos ahí no se elige: es `auto`.**
+  Todo lo demás sigue exactamente igual sin el parámetro. Las decisiones que no se re-litigan:
+  - **El JSON de resultado es un freno, no un certificado.** `stop` vale mucho (un agente que dice
+    "no pude" casi nunca se equivoca); `ok` vale poco (el modo de falla más común es la sesión que
+    entendió mal y está convencida de que hizo bien). Por eso no se confía más, sólo se corta antes.
+  - **La ausencia de resultado es `stop`.** Medido: en headless el exit code es 0 aunque el agente
+    no haya podido hacer nada. Si la falta de señal se leyera como "seguí", una sesión colgada le
+    arrastraría el error a toda la serie.
+  - **El contrato viaja por `--append-system-prompt`, no por el README del repo destino.** Así llega
+    siempre, sin depender de que el agente lea un archivo ni de que el autor del prompt se acuerde,
+    y queda versionado con el runner.
+  - **El vocabulario es chico y no ejecutable**: enum de dos valores y un `reason` que se imprime,
+    nunca se parsea. El JSON lo escribe un agente que estuvo leyendo el repo; darle verbos sería
+    darle a ese contenido un canal para dirigir el runner.
+  - **`[Console]::OutputEncoding` se fija en UTF-8, y se fija ARRIBA DE TODO.** El canal de vuelta
+    es el stdout de un proceso nativo: con otra codificación, un `reason` con acentos se corrompe y
+    el JSON parsea igual. Y el lugar importa — medido en pwsh 7.6.5 con `-File`: **el host se queda
+    con el encoding que tenía cuando escribió por primera vez**, así que fijarlo al lado del loop
+    arregla la lectura y deja la escritura en la codificación vieja (una corrida redirigida a un
+    archivo sale en la ANSI de la consola). Hay **dos** tests contra un `.exe` nativo, con la consola
+    del proceso hijo en 1252 —uno por cada lado del canal—, y son dos porque uno solo dejaba pasar
+    una de las dos mutaciones: leer mal y escribir mal con la *misma* codificación equivocada
+    devuelve los bytes originales y el error se cancela.
+  - **No se usa `Start-Process`** para poder poner un timeout: sus reglas de comillas son otras y
+    volvería a abrir la clase de corrupción que este repo existe para no cometer. El techo es
+    `-MaxBudgetUsd`, que el CLI corta con exit code distinto de cero.
+- **Un prompt que no sea UTF-8 corta la corrida.** Se valida con una decodificación UTF-8
+  estricta antes que nada, y el UTF-16 sin BOM aparte por sus bytes NUL. No se adivina la
+  codificación ni se convierte sola: leer un prompt en otra codificación es mandarle a la
+  sesión un texto distinto del que se escribió, que es lo mismo que este repo evita del lado
+  de los argumentos.
+- **El patrón de las marcas termina en `[ \t]*\r?$`, y el `\r?` no se saca.** `$` en modo
+  multilínea matchea antes del `\n`, así que en un `.md` con fin de línea CRLF —lo que entrega Git
+  para Windows en un repo sin `.gitattributes`, o sea el caso normal— sin ese `\r?` **ninguna**
+  marca aplica, y no aplica en silencio. Está medido y tiene test.
 - **Las carpetas que empiezan con `_` no son series**, aunque tengan prompts numerados adentro. Es lo
   que permite que `_serie-de-ejemplo` muestre el formato completo sin ensuciar el menú.
 - **El `session-prompts.config.json` se valida entero al arrancar**, contra la lista de claves que el

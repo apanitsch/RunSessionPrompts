@@ -159,6 +159,9 @@ Cada sesión es interactiva y con **Remote Control**: aparece en el celular y en
 te puede preguntar y le respondés desde ahí. **No se cierra sola**: cuando la cerrás con `/exit`, el
 script lanza la siguiente. Si una sesión sale con error, la corrida se corta ahí.
 
+La excepción es [`-Unattended`](#-unattended-la-serie-corre-sola), donde no hay Remote Control ni `/exit`
+y la serie avanza sola. Es opt-in: sin ese parámetro, lo de arriba es todo lo que pasa.
+
 **Todo lo que hay que decidir se pregunta al principio**, antes de la primera sesión. Es la única
 promesa que el script no puede romper: contestás una vez y te vas.
 
@@ -199,6 +202,8 @@ pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -DryRun
 | `-PermissionMode` | El modo de permisos de toda la corrida: `acceptEdits` (default), `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`. Se pasa tal cual a `--permission-mode`. |
 | `-Auto` | Atajo de `-PermissionMode auto`, el modo **Auto** de Claude Code Desktop. Ojo: `auto` **no** es `acceptEdits`, son dos modos distintos del CLI. |
 | `-FullAuto` | `--dangerously-skip-permissions` en vez de `--permission-mode`. Junto con `-Auto` o `-PermissionMode` es un error, no una precedencia. |
+| `-Unattended` | La serie corre **sola**: sin Remote Control, sin `/exit`, y cada sesión dice si la serie sigue. Opt-in y se confirma a mano. Ver [`-Unattended`](#-unattended-la-serie-corre-sola). |
+| `-MaxBudgetUsd` | Techo de gasto por sesión (`--max-budget-usd`). Sólo con `-Unattended`. |
 | `-Todas` | El menú incluye también las series ya terminadas. |
 | `-Worktree` | La serie corre aislada en su propio git worktree. |
 | `-BaseBranch`, `-BranchPrefix`, `-WorktreeRoot` | Detalles del worktree. |
@@ -266,6 +271,64 @@ el effort de cada una, con el porqué:
   02-tramite.md                      Sonnet 5 effort low     <- modelo sugerido (baja desde Opus 5); effort sugerido (baja desde high)
   03-dificil.md                      Opus 5   effort max     <- effort sugerido (SUBE, confirmado)
 ```
+
+### `-Unattended`: la serie corre sola
+
+Con `-Unattended` la serie corre **sin supervisión**. Cada sesión se lanza con `claude -p` en vez de
+una sesión interactiva:
+
+```
+claude --model <modelo> --effort <effort> --permission-mode auto -p --output-format stream-json --verbose        --json-schema <esquema del resultado> --append-system-prompt <el contrato>        --session-id <guid> --name <serie/NN-nombre> "<el prompt entero>"
+```
+
+**Es opt-in y se confirma a mano**: el runner imprime lo que se pierde y hay que escribir `si` para
+arrancar. Sin el parámetro no cambia absolutamente nada del comportamiento de siempre.
+
+#### Cómo decide si sigue
+
+El runner le pide a cada sesión un resultado estructurado, por `--append-system-prompt` y no por
+ningún archivo del repo destino: así llega **siempre**, sin depender de que el agente lea algo ni de
+que el autor del prompt se acuerde.
+
+```json
+{ "result": "ok" | "stop", "reason": "una o dos frases" }
+```
+
+**La serie sigue sólo si se cumple todo**: exit code 0, resultado presente y parseable, y `result`
+en `ok`. Todo lo demás frena, **incluida la ausencia de resultado**. Esa asimetría es deliberada:
+un agente que dice "no pude" casi nunca se equivoca, pero un `ok` vale poco —el modo de falla más
+común es la sesión que entendió mal y está convencida de que hizo bien—. Así que el JSON es un
+**freno que la sesión puede tirar**, no un certificado de calidad. Y si la falta de señal se leyera
+como "seguí", una sesión que se colgó le arrastraría el error a todas las que vienen.
+
+Los dos diagnósticos se imprimen distinto a propósito: *la sesión pidió frenar* es el mecanismo
+funcionando; *la sesión no dejó resultado* es una sesión que se colgó, y no se arreglan igual. El
+`reason` se imprime siempre, también cuando dice `ok`.
+
+#### Las dos marcas del prompt
+
+| Marca | Obligatoria | Qué hace |
+| --- | --- | --- |
+| `<!-- runner-requerido: 2.0 -->` | **sí**, en `-Unattended` | Dice que el prompt se escribió conociendo el contrato. Sin ella el runner no corre la serie sin supervisión. Un repo con las plantillas de una versión anterior no tiene documentado el contrato, así que sus prompts no pueden cumplirlo aunque quieran. |
+| `<!-- automatico: no \| motivo -->` | no | Esta sesión **necesita** un humano. La serie corre hasta la anterior y frena ahí, limpio, diciendo con qué `-StartFrom` seguir. |
+
+Las dos se validan siempre —una marca mal escrita corta, con o sin `-Unattended`— y se exigen sólo en
+este modo. El `automatico: no` se detecta **al arrancar**: antes de la primera sesión ya sabés dónde
+va a parar la corrida.
+
+#### Qué se pierde y qué no
+
+- **Se pierde la ventana en vivo.** Remote Control es interactivo por definición, así que no hay
+  sesión en el celular mientras corre. Pasás de "miro mientras" a "miro después".
+- **No se pierden las sesiones.** Quedan guardadas igual que las interactivas —mismo lugar, mismo
+  nombre— y el runner imprime el `claude --resume <id>` de cada una.
+- **La consola muestra el stream de eventos**, no el dibujo de la TUI: ese lo hace la TUI, que en
+  `-p` no existe. A cambio queda un log parejo entre sesiones, que el modo interactivo no deja.
+- **El modo de permisos no se elige**: es `auto`, y pasar `-PermissionMode` o `-FullAuto` junto con
+  `-Unattended` es un error. Un clasificador ocupa el lugar que ocupabas vos. Lo que no aprueba queda
+  denegado, la sesión no puede hacer el trabajo, y lo reporta — que es el mismo freno de arriba.
+- **No hay techo de gasto** salvo `-MaxBudgetUsd`. Sin nadie mirando, una sesión trabada puede
+  correr sin límite.
 
 ### Aislamiento por worktree (`-Worktree`)
 
@@ -399,6 +462,26 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | no escapar nunca | los casos que dependen del escapado en 7.0–7.2 |
 | no fijar el modo | el caso de `Legacy` |
 | aceptar el shim `.cmd` tal cual | los dos casos de shim |
+| no poner la consola en UTF-8 en `-Unattended` | el caso del `reason` que se **lee** con acentos |
+| ponerla en UTF-8 **después** de la primera línea impresa | el caso del `reason` que se **escribe** — el host se queda con el encoding que tenía al escribir por primera vez |
+| leer la ausencia de resultado como `ok` | los dos casos de sesión que no deja resultado |
+| no exigir la marca `runner-requerido` | el caso de la serie que no la declara |
+| ignorar `automatico: no` | el caso de la corrida que frena antes de esa sesión |
+| sacarle el `\r?` al patrón de las marcas | el caso de los prompts en CRLF — las cuatro marcas dejan de aplicar |
+| no validar que los `.md` estén en UTF-8 | el caso del prompt guardado en ANSI |
+| no mirar los bytes NUL | el caso del prompt en UTF-16 sin BOM |
+
+Los casos de `-Unattended` corren contra el mismo doble, que además emite el stream NDJSON como lo
+emite `claude -p`. Los del `reason` con acentos usan el `.exe` nativo y arrancan el proceso hijo con
+la consola en Windows-1252: si el runner no la pone en UTF-8, los bytes del `.exe` se leen como
+mojibake — **y el JSON parsea igual**, que es lo que hace peligrosa a esa falla.
+
+Son **dos** casos y no uno porque el canal tiene dos lados que se rompen distinto, y **un solo caso
+dejaba pasar una de las dos mutaciones**: si el runner lee mal y escribe mal con la *misma*
+codificación equivocada, los bytes que salen son iguales a los que entraron y el error se cancela.
+El caso de lectura desvía la escritura a un archivo en UTF-8 explícito; el de escritura hace que el
+`.exe` emita la línea en ASCII puro, con los acentos como escapes del JSON, para que lo único
+medido sea con qué codificación imprime el runner.
 
 El `.exe` de prueba lo compila **Windows PowerShell 5.1**, que viene con Windows: PowerShell 7 no
 puede generar ejecutables de consola. Es el único uso de 5.1 en el proyecto, y es para construir el

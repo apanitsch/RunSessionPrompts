@@ -104,6 +104,34 @@ $registro = [pscustomobject]@{
     Args      = @($args)
 }
 Add-Content -LiteralPath $log -Value ($registro | ConvertTo-Json -Compress -Depth 6) -Encoding UTF8
+
+# Modo -Unattended: 'claude -p --output-format stream-json' emite NDJSON. El doble emite lo
+# mismo, y lo que devuelve al final se elige con FAKE_CLAUDE_RESULT:
+#   ok (default) | stop | sin-structured | sin-result | raro
+if ($args -contains 'stream-json') {
+    $motivo = if ($env:FAKE_CLAUDE_REASON) { $env:FAKE_CLAUDE_REASON } else { 'la sesion hizo lo suyo' }
+    Write-Output '{"type":"system","subtype":"init","session_id":"x"}'
+    Write-Output '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"mmm"}]}}'
+    Write-Output '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status --short"}}]}}'
+    Write-Output '{"type":"assistant","message":{"content":[{"type":"text","text":"toque dos archivos"}]}}'
+
+    $modo = if ($env:FAKE_CLAUDE_RESULT) { $env:FAKE_CLAUDE_RESULT } else { 'ok' }
+    switch ($modo) {
+        'sin-result'     { }
+        'sin-structured' { Write-Output '{"type":"result","subtype":"success","is_error":false}' }
+        default {
+            $veredicto = if ($modo -eq 'raro') { 'quiza' } else { $modo }
+            $cuerpo = [pscustomobject]@{
+                type              = 'result'
+                subtype           = 'success'
+                is_error          = $false
+                structured_output = [pscustomobject]@{ result = $veredicto; reason = $motivo }
+            }
+            Write-Output ($cuerpo | ConvertTo-Json -Compress -Depth 6)
+        }
+    }
+}
+
 if ($env:FAKE_CLAUDE_EXIT) { exit [int]$env:FAKE_CLAUDE_EXIT }
 exit 0
 '@
@@ -140,9 +168,14 @@ function ConvertTo-ArgsCitados([string[]]$argumentos) {
 # -Prologo: codigo que corre en ESE pwsh antes del runner. Sirve para poner un doble de un cmdlet
 # -- una funcion definida ahi le gana al cmdlet adentro del script --, que es como se prueba el
 # chequeo de version sin salir a la red.
-function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy, [string]$Prologo) {
+function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy, [string]$Prologo,
+                      [string]$fakeResult, [string]$fakeReason) {
     $env:FAKE_CLAUDE_LOG = $fixture.Log
     if ($fakeExit) { $env:FAKE_CLAUDE_EXIT = "$fakeExit" } else { Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue }
+
+    # Lo que el doble va a devolver como resultado estructurado, para los casos de -Unattended.
+    if ($fakeResult) { $env:FAKE_CLAUDE_RESULT = $fakeResult } else { Remove-Item Env:\FAKE_CLAUDE_RESULT -ErrorAction SilentlyContinue }
+    if ($fakeReason) { $env:FAKE_CLAUDE_REASON = $fakeReason } else { Remove-Item Env:\FAKE_CLAUDE_REASON -ErrorAction SilentlyContinue }
 
     # Ningun caso sale a la red salvo los que prueban el chequeo de version, que pasan
     # -SkipUpdateCheck explicitamente... al reves: se lo sacan.
@@ -177,6 +210,8 @@ function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fa
     } finally {
         Pop-Location
         Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue
+        Remove-Item Env:\FAKE_CLAUDE_RESULT -ErrorAction SilentlyContinue
+        Remove-Item Env:\FAKE_CLAUDE_REASON -ErrorAction SilentlyContinue
     }
 
     return [pscustomobject]@{
@@ -280,6 +315,27 @@ class Eco {
         }
         sb.Append("]}");
         File.AppendAllText(log, sb.ToString() + Environment.NewLine, new UTF8Encoding(false));
+
+        // Modo -Unattended: emite el stream NDJSON como 'claude -p --output-format stream-json',
+        // en bytes UTF-8 escritos directo al stdout (sin pasar por Console.OutputEncoding, para
+        // que lo que se mide sea la decodificacion DEL RUNNER y nada mas).
+        string stream = Environment.GetEnvironmentVariable("FAKE_CLAUDE_STREAM");
+        string streamJson = Environment.GetEnvironmentVariable("FAKE_CLAUDE_STREAM_JSON");
+        if (!string.IsNullOrEmpty(stream) || !string.IsNullOrEmpty(streamJson)) {
+            string razon = !string.IsNullOrEmpty(streamJson) ? streamJson : J(stream);
+            Stream so = Console.OpenStandardOutput();
+            UTF8Encoding u8 = new UTF8Encoding(false);
+            string[] lineas = new string[] {
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo hola\"}}]}}",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"result\":\"ok\",\"reason\":\"" + razon + "\"}}"
+            };
+            foreach (string l in lineas) {
+                byte[] b = u8.GetBytes(l + "\n");
+                so.Write(b, 0, b.Length);
+            }
+            so.Flush();
+        }
+
         string codigo = Environment.GetEnvironmentVariable("FAKE_CLAUDE_EXIT");
         return string.IsNullOrEmpty(codigo) ? 0 : int.Parse(codigo);
     }
@@ -1981,6 +2037,472 @@ Test-Case "el formato que ya usan los repos existentes se lee sin quejas" {
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
     Assert-NotMatch 'No entiendo estas lineas' $r.Salida "el formato de siempre no puede molestar"
     Assert-Equal 1 (Get-Sesiones $f).Count "y la serie corre"
+}
+
+# --- -Unattended: la serie corre sola ---------------------------------------
+# Todos los casos de aca abajo pasan 'si' por stdin: el modo se confirma a mano y sin eso no
+# arranca (hay un caso que lo verifica).
+
+# Un prompt listo para correr sin supervision: con la marca de version que el modo exige.
+function Get-PromptDesatendida([string]$cuerpo) {
+    return "<!-- runner-requerido: 2.0 -->`n`n$cuerpo"
+}
+
+Test-Case "-Unattended lanza cada sesion en modo no interactivo, sin Remote Control" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-hl' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 2 $s.Count "las dos sesiones corren"
+    Assert-True (@($s[0].Args) -contains '-p') "-p: la sesion no es interactiva"
+    Assert-Equal 'stream-json' (Get-ArgValue $s[0] '--output-format') "el stream es el canal de vuelta"
+    Assert-True (@($s[0].Args) -contains '--verbose') "stream-json en -p necesita --verbose"
+    Assert-Equal 'auto' (Get-ArgValue $s[0] '--permission-mode') "en -Unattended el permiso es 'auto' y no se elige"
+    Assert-NotMatch '--rc' (@($s[0].Args) -join ' ') "Remote Control es interactivo: no va"
+    Assert-Match 'structured_output|"result"' (Get-ArgValue $s[0] '--json-schema') "el esquema del resultado viaja"
+    Assert-Match 'SIN SUPERVISION' (Get-ArgValue $s[0] '--append-system-prompt') "y el contrato tambien"
+    Assert-Match '^[0-9a-f-]{36}$' (Get-ArgValue $s[0] '--session-id') "cada sesion se lanza con su id, para poder abrirla despues"
+    Assert-Equal 'serie-hl/02-dos' (Get-ArgValue $s[1] '--name') "el nombre de la sesion sigue igual"
+}
+
+Test-Case "sin -Unattended no cambia nada: ni -p, ni contrato, ni esquema" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-normal' @{ '01-uno.md' = 'x' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    $todos = @($s[0].Args) -join ' '
+    Assert-NotMatch '\-p( |$)'              $todos "la corrida de siempre es interactiva"
+    Assert-NotMatch '--append-system-prompt' $todos "el contrato es exclusivo de -Unattended"
+    Assert-NotMatch '--json-schema'          $todos "el esquema tambien"
+    Assert-Match    '--rc'                   $todos "y Remote Control sigue estando"
+}
+
+Test-Case "una sesion que devuelve 'stop' frena la serie, y el motivo se imprime" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-stop' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeResult 'stop' `
+                            -fakeReason 'no encontre el archivo de configuracion'
+    Assert-True ($r.ExitCode -ne 0) "una serie frenada no termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la segunda sesion NO se lanza"
+    Assert-Match 'pidio frenar' $r.Salida "tiene que decir que fue la sesion la que freno"
+    Assert-Match 'no encontre el archivo de configuracion' $r.Salida "y el motivo que dio"
+}
+
+Test-Case "una sesion que no deja resultado frena, y se distingue de la que pidio frenar" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-mudo' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeResult 'sin-result'
+    Assert-True ($r.ExitCode -ne 0) "la ausencia de senal NO es un permiso para seguir. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la segunda no arranca"
+    Assert-Match 'sin dejar ningun resultado' $r.Salida "el diagnostico es otro que el de 'stop'"
+    Assert-NotMatch 'pidio frenar' $r.Salida "y no se confunden"
+    Assert-Match 'toque dos archivos' $r.Salida "dice lo ultimo que la sesion estaba haciendo"
+}
+
+Test-Case "un 'result' sin el objeto estructurado tambien frena" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-obj' @{ '01-uno.md' = (Get-PromptDesatendida 'x'); '02-dos.md' = (Get-PromptDesatendida 'y') }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeResult 'sin-structured'
+    Assert-True ($r.ExitCode -ne 0) "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'sin el resultado estructurado' $r.Salida "y lo dice"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la segunda no arranca"
+}
+
+Test-Case "un veredicto fuera de la enumeracion frena, no se toma como 'ok'" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-raro' @{ '01-uno.md' = (Get-PromptDesatendida 'x'); '02-dos.md' = (Get-PromptDesatendida 'y') }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeResult 'raro'
+    Assert-True ($r.ExitCode -ne 0) "exit code. Salida:`n$($r.Salida)"
+    Assert-Match "result: quiza" $r.Salida "nombra el valor que llego"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la segunda no arranca"
+}
+
+Test-Case "-Unattended se niega a correr una serie que no declara el runner que necesita" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-vieja' @{
+        '01-uno.md' = (Get-PromptDesatendida 'esta si')
+        '02-dos.md' = 'esta no declara nada'
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match '02-dos.md' $r.Salida "nombra el prompt que falta marcar"
+    Assert-NotMatch '01-uno.md' $r.Salida "y no el que si esta marcado"
+    Assert-Match 'runner-requerido' $r.Salida "y dice que marca poner"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "la misma serie sin -Unattended corre igual que siempre" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-mixta' @{
+        '01-uno.md' = (Get-PromptDesatendida 'con marca')
+        '02-dos.md' = "<!-- automatico: no | pide una decision -->`n`nsin marca de version"
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "las marcas de -Unattended no pueden molestar a la corrida normal. Salida:`n$($r.Salida)"
+    Assert-Equal 2 (Get-Sesiones $f).Count "las dos sesiones corren"
+}
+
+Test-Case "un prompt que pide un runner mas nuevo que el instalado corta" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-futuro' @{ '01-uno.md' = "<!-- runner-requerido: 99.0 -->`n`ndel futuro" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'mas nuevo que el instalado' $r.Salida "dice cual es el problema"
+    Assert-Match '-Update' $r.Salida "y como salir"
+}
+
+Test-Case "un prompt escrito para un runner anterior al contrato no corre solo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-1x' @{ '01-uno.md' = "<!-- runner-requerido: 1.7 -->`n`nde antes" }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'declara 1.7' $r.Salida "nombra lo que el prompt dice"
+}
+
+Test-Case "una marca de -Unattended mal escrita corta, no se ignora en silencio" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-marca-mala' @{
+        '01-uno.md' = "<!-- runner-requerido: dos -->`n`nx"
+        '02-dos.md' = "<!-- automatico: quiza -->`n`ny"
+    }
+
+    # Sin -Unattended: una marca mal escrita es un error igual.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'no es un numero de version' $r.Salida "la de version"
+    Assert-Match 'no es un valor valido'      $r.Salida "y la de automatico, las dos juntas"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "una sesion marcada 'automatico: no' frena la corrida automatica antes de llegar" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-freno' @{
+        '01-uno.md'  = (Get-PromptDesatendida 'la primera')
+        '02-dos.md'  = (Get-PromptDesatendida 'la segunda')
+        '03-tres.md' = "<!-- runner-requerido: 2.0 -->`n<!-- automatico: no | hace deploy a produccion -->`n`nla tercera"
+        '04-cuatro.md' = (Get-PromptDesatendida 'la cuarta')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r.ExitCode "frenar donde se dijo NO es un fallo. Salida:`n$($r.Salida)"
+    Assert-Equal 2 (Get-Sesiones $f).Count "corre hasta la anterior y para"
+    Assert-Match 'FRENA antes de 03-tres.md' $r.Salida "y lo avisa ANTES de arrancar"
+    Assert-Match 'hace deploy a produccion'  $r.Salida "con el motivo que dio el prompt"
+    Assert-Match '-StartFrom 3'              $r.Salida "y como seguir a mano"
+}
+
+Test-Case "si la primera sesion pide humano, -Unattended no tiene nada que correr" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-freno-1' @{
+        '01-uno.md' = "<!-- runner-requerido: 2.0 -->`n<!-- automatico: no -->`n`nla primera"
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+    Assert-Match 'no queda nada que correr' $r.Salida "y dice por que"
+}
+
+Test-Case "-Unattended no deja elegir el modo de permisos" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-perm' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-FullAuto', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r.ExitCode "con -FullAuto corta. Salida:`n$($r.Salida)"
+    Assert-Match 'permission-mode auto' $r.Salida "y dice cual es el modo de este modo"
+
+    $r2 = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                             '-Unattended', '-PermissionMode', 'acceptEdits', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 1 $r2.ExitCode "con -PermissionMode tambien corta. Salida:`n$($r2.Salida)"
+
+    # '-Auto' dice lo mismo que ya va a pasar: no molesta.
+    $r3 = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                             '-Unattended', '-Auto', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r3.ExitCode "-Auto es redundante, no contradictorio. Salida:`n$($r3.Salida)"
+}
+
+Test-Case "la configuracion del repo no puede meter otro modo de permisos en -Unattended" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-perm-cfg' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+    Set-Content -LiteralPath (Join-Path $f.SeriesRoot 'session-prompts.config.json') -Encoding UTF8 -Value '{ "fullAuto": true }'
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match "Uso 'auto'" $r.Salida "se pisa, pero se DICE"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 'auto' (Get-ArgValue $s[0] '--permission-mode') "y el modo es auto"
+    Assert-NotMatch 'dangerously-skip-permissions' (@($s[0].Args) -join ' ') "el fullAuto del archivo no viaja"
+}
+
+Test-Case "sin confirmar, -Unattended no lanza ninguna sesion" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-ok' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "`n"
+    Assert-Equal 1 $r.ExitCode "un Enter no alcanza. Salida:`n$($r.Salida)"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+    Assert-Match 'NO hay Remote Control' $r.Salida "y la advertencia dice lo que se pierde"
+}
+
+Test-Case "-MaxBudgetUsd viaja con punto decimal aunque la maquina use coma" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-techo' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    $prologo = "[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::new('es-AR')"
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-MaxBudgetUsd', '2.5', '-ClaudeCommand', $f.FakeClaude) "si`n" -Prologo $prologo
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Equal '2.5' (Get-ArgValue (Get-Sesiones $f)[0] '--max-budget-usd') "con coma, el CLI lo leeria distinto"
+}
+
+Test-Case "-MaxBudgetUsd sin -Unattended avisa que no aplica" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-techo2' @{ '01-uno.md' = 'x' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-MaxBudgetUsd', '2', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'solo aplica con -Unattended' $r.Salida "y dice por que"
+}
+
+Test-Case "el esquema y el contrato tambien cruzan intactos hacia un .exe nativo" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-args' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    # El esquema es JSON con comillas dobles por todos lados, y el contrato es un texto multilinea
+    # con comillas adentro: son exactamente las dos formas que este script existe para no romper.
+    # Con -Legacy el llamador deja el modo de pasaje de argumentos en el viejo, y el runner tiene
+    # que fijarlo igual para estos dos argumentos, no solo para el prompt.
+    $env:FAKE_CLAUDE_STREAM = 'todo bien'
+    try {
+        $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                                '-Unattended', '-ClaudeCommand', $script:EcoExe) "si`n" -Legacy
+    } finally {
+        Remove-Item Env:\FAKE_CLAUDE_STREAM -ErrorAction SilentlyContinue
+    }
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match "modo fijado en 'Standard'" $r.Salida "el runner fija el modo tambien en esta corrida"
+
+    $s = Get-Sesiones $f
+    $esquema = Get-ArgValue $s[0] '--json-schema'
+    $contrato = Get-ArgValue $s[0] '--append-system-prompt'
+
+    # El esquema tiene que seguir siendo JSON valido del otro lado: si una comilla se perdio en el
+    # camino, esto revienta -- que es justo lo que queremos que pase en un test y no en una corrida.
+    $o = $esquema | ConvertFrom-Json
+    Assert-Equal 'ok'   $o.properties.result.enum[0] "el esquema cruza como JSON valido"
+    Assert-Equal 'stop' $o.properties.result.enum[1] "con los dos valores del enum"
+
+    Assert-Match 'SIN SUPERVISION HUMANA' $contrato "el contrato cruza entero"
+    Assert-Match 'Ante la duda, "stop"'    $contrato "con sus comillas dobles adentro"
+    Assert-True ($contrato.Contains("`n"))  "y multilinea: es lo que el shim .cmd truncaria"
+}
+
+Test-Case "al terminar una corrida interactiva se avisa que -Unattended existe" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-oferta' @{ '01-uno.md' = 'la primera'; '02-dos.md' = 'la segunda' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'Si cerrar con /exit te molesta' $r.Salida "el aviso aparece al final"
+    Assert-Match 'sin\s+Remote Control'           $r.Salida "y dice lo que se pierde, no solo lo que se gana"
+
+    # Sin comando para copiar: la serie que acaba de terminar no se vuelve a correr, y mandarlo a
+    # correr ESTA seria mandarlo a ningun lado.
+    Assert-NotMatch '-PromptsPath.*-Unattended' $r.Salida "no va un comando sobre una serie ya terminada"
+}
+
+Test-Case "el aviso de -Unattended no aparece donde seria ruido" {
+    $f = New-Fixture
+
+    # Una sola sesion: no hay "cada sesion" que moleste.
+    $sola = New-Serie $f 'serie-sola' @{ '01-uno.md' = 'unica' }
+    $r1 = Invoke-Runner $f @('-PromptsPath', $sola, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r1.ExitCode "exit code. Salida:`n$($r1.Salida)"
+    Assert-NotMatch 'te molesta' $r1.Salida "con una sola sesion el aviso no tiene sentido"
+
+    # Y en una corrida que ya es desatendida, menos todavia.
+    $dos = New-Serie $f 'serie-ya-desatendida' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+    $r2 = Invoke-Runner $f @('-PromptsPath', $dos, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                             '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r2.ExitCode "exit code. Salida:`n$($r2.Salida)"
+    Assert-NotMatch 'te molesta' $r2.Salida "ya lo esta usando"
+}
+
+Test-Case "un prompt guardado en la ANSI de Windows corta, en vez de perder los acentos" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-ansi' @{ '01-uno.md' = 'sin acentos'; '02-dos.md' = 'x'; '03-tres.md' = 'x' }
+
+    # Los acentos por codigo: este archivo se mantiene en ASCII puro.
+    $conAcentos = "Objetivo: la ejecuci" + [char]0x00F3 + "n del compa" + [char]0x00F1 + "ero."
+    [System.IO.File]::WriteAllText((Join-Path $serie '02-dos.md'), $conAcentos, [System.Text.Encoding]::GetEncoding(1252))
+    # UTF-16 SIN BOM: pasa la validacion de UTF-8 (el NUL es un byte valido) y se leeria como basura.
+    [System.IO.File]::WriteAllText((Join-Path $serie '03-tres.md'), 'texto ascii', [System.Text.UnicodeEncoding]::new($false, $false))
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza NINGUNA sesion: el corte es antes de todo"
+    Assert-Match '02-dos.md: no es UTF-8 valido' $r.Salida "nombra el archivo y el motivo"
+    Assert-Match '03-tres.md: tiene bytes NUL'   $r.Salida "y el UTF-16 sin BOM se distingue"
+    Assert-NotMatch '01-uno.md' $r.Salida "el que esta bien no se nombra"
+    Assert-Match 'utf8NoBOM' $r.Salida "y dice como convertirlo"
+}
+
+Test-Case "UTF-8 con BOM, UTF-16 con BOM y ASCII puro se aceptan sin ruido" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-encodings' @{ '01-uno.md' = 'x'; '02-dos.md' = 'x'; '03-tres.md' = 'x' }
+
+    $conAcentos = "la ejecuci" + [char]0x00F3 + "n del compa" + [char]0x00F1 + "ero"
+    [System.IO.File]::WriteAllText((Join-Path $serie '01-uno.md'), $conAcentos, [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText((Join-Path $serie '02-dos.md'), $conAcentos, [System.Text.UnicodeEncoding]::new($false, $true))
+    [System.IO.File]::WriteAllText((Join-Path $serie '03-tres.md'), 'nada mas que ascii', [System.Text.Encoding]::ASCII)
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-NotMatch 'no estan guardados en UTF-8' $r.Salida "ninguno de los tres puede molestar"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 3 $s.Count "las tres corren"
+    Assert-Equal $conAcentos (Get-PromptTexto $s[0]) "y el texto con acentos cruza intacto (BOM UTF-8)"
+    Assert-Equal $conAcentos (Get-PromptTexto $s[1]) "y tambien desde UTF-16 con BOM"
+}
+
+Test-Case "las marcas se leen igual si el repo destino entrega los .md en CRLF" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-crlf' @{ '01-uno.md' = 'x'; '02-dos.md' = 'x'; '03-tres.md' = 'x' }
+
+    # CRLF explicito, que es como Git para Windows deja los .md en un repo SIN .gitattributes.
+    # Es el caso normal en un repo destino, no un borde: si el patron de las marcas no lo
+    # contempla, ninguna marca aplica y no aplica EN SILENCIO.
+    $crlf = @{
+        '01-uno.md'  = "<!-- runner-requerido: 2.0 -->`r`n<!-- effort-sugerido: low -->`r`n`r`nla primera"
+        '02-dos.md'  = "<!-- runner-requerido: 2.0 -->`r`n<!-- modelo-sugerido: sonnet -->`r`n`r`nla segunda"
+        '03-tres.md' = "<!-- runner-requerido: 2.0 -->`r`n<!-- automatico: no | pide un humano -->`r`n`r`nla tercera"
+    }
+    foreach ($nombre in $crlf.Keys) {
+        [System.IO.File]::WriteAllText((Join-Path $serie $nombre), $crlf[$nombre], [System.Text.UTF8Encoding]::new($false))
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 2 $s.Count "la tercera pide humano: la corrida frena antes"
+    Assert-Match 'FRENA antes de 03-tres.md' $r.Salida "la marca 'automatico' tiene que leerse con CRLF"
+    Assert-Match 'pide un humano' $r.Salida "y su motivo tambien"
+    Assert-Equal 'low' (Get-ArgValue $s[0] '--effort') "la de effort tambien"
+    Assert-Equal 'claude-sonnet-5' (Get-ArgValue $s[1] '--model') "y la de modelo"
+    Assert-NotMatch 'no lo declaran' $r.Salida "y la de version: sin ella -Unattended ni arrancaria"
+}
+
+# El canal de vuelta tiene DOS lados, y cada uno se rompe distinto. Un solo caso no alcanza: si el
+# runner leyera mal Y escribiera mal con la MISMA codificacion equivocada, los bytes que salen son
+# iguales a los que entraron y el error se cancela. Esta MEDIDO: un caso solo dejaba pasar una de
+# las dos mutaciones. Por eso van separados.
+
+Test-Case "el runner LEE bien el resultado con acentos aunque la consola no este en UTF-8" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-utf8-lee' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    # Los acentos se arman por codigo: este archivo se mantiene en ASCII puro, como los .ps1 del
+    # producto. El .exe los emite en bytes UTF-8 crudos.
+    $conAcentos = "ejecuci" + [char]0x00F3 + "n " + [char]0x00F1 + "andu compa" + [char]0x00F1 + "ero"
+    $env:FAKE_CLAUDE_STREAM = $conAcentos
+    $env:HOST_LOG = Join-Path $f.Repo 'consola.txt'
+
+    # El pwsh hijo arranca con la consola en la ANSI de Windows: ahi el runner tiene que ponerla en
+    # UTF-8 o los bytes del .exe se leen como mojibake. Write-Host se desvia a un archivo escrito en
+    # UTF-8 explicito, para que lo unico bajo medicion sea la LECTURA.
+    $prologo = "[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(1252); " +
+               "function Write-Host { param([Parameter(Position=0, ValueFromRemainingArguments=`$true)]`$Object, `$ForegroundColor, [switch]`$NoNewline) " +
+               "Add-Content -LiteralPath `$env:HOST_LOG -Value ((@(`$Object) -join ' ')) -Encoding UTF8 }"
+    try {
+        $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                                '-Unattended', '-ClaudeCommand', $script:EcoExe) "si`n" -Prologo $prologo
+        $consola = Get-Content -LiteralPath $env:HOST_LOG -Raw -Encoding UTF8
+    } finally {
+        Remove-Item Env:\FAKE_CLAUDE_STREAM -ErrorAction SilentlyContinue
+        Remove-Item Env:\HOST_LOG -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match ([regex]::Escape($conAcentos)) $consola "el 'reason' tiene que decodificarse byte a byte, no como mojibake"
+}
+
+Test-Case "el runner ESCRIBE en UTF-8, y lo fija antes de su primera linea" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-utf8-escribe' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    # Aca el .exe emite la linea en ASCII PURO, con los acentos como escapes del JSON: la lectura no
+    # puede fallar, asi que lo unico medido es con que codificacion el runner IMPRIME lo que ya
+    # decodifico bien. Sin desviar Write-Host: se mide la consola de verdad.
+    $env:FAKE_CLAUDE_STREAM_JSON = 'ejecuci\u00f3n \u00f1andu compa\u00f1ero'
+    $esperado = "ejecuci" + [char]0x00F3 + "n " + [char]0x00F1 + "andu compa" + [char]0x00F1 + "ero"
+
+    $prologo = "[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(1252)"
+    $previo = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                                '-Unattended', '-ClaudeCommand', $script:EcoExe) "si`n" -Prologo $prologo
+    } finally {
+        [Console]::OutputEncoding = $previo
+        Remove-Item Env:\FAKE_CLAUDE_STREAM_JSON -ErrorAction SilentlyContinue
+    }
+
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match ([regex]::Escape($esperado)) $r.Salida "si el encoding se fija tarde, el host sigue escribiendo en la ANSI vieja"
 }
 
 # --- Cierre ---------------------------------------------------------------

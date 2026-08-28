@@ -68,6 +68,9 @@ que describa este andamiaje. Estas son las que cambiaron; verificá cada una con
   `<!-- effort-sugerido: ... -->`, y el de la corrida funciona como tope.
 - **"cada serie corre en un worktree"** → el aislamiento por worktree es **opcional** (`-Worktree`) y
   viene apagado.
+- **"la serie sólo avanza si alguien cierra cada sesión con `/exit`"** → sigue siendo el default,
+  pero ya no es la única forma: con `-Unattended` la serie corre sola y cada sesión devuelve si la
+  siguiente arranca. Es opt-in y necesita que los prompts traigan `<!-- runner-requerido: 2.0 -->`.
 - **Cualquier instrucción de editar el script** para adaptarlo a este repo → eso ahora va al
   `session-prompts.config.json`.
 

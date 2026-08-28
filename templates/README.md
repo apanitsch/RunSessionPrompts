@@ -58,6 +58,11 @@ Tres cosas que conviene saber antes de la primera vez:
   silencio**.
 - **Las sesiones no se cierran solas.** Son interactivas y con Remote Control: cuando la sesión
   terminó su trabajo, la cerrás con `/exit` —desde el celular si querés— y ahí arranca la siguiente.
+  (La excepción es [`-Unattended`](#-unattended-la-serie-corre-sola), donde no hay `/exit` ni Remote
+  Control y la serie avanza sola.)
+- **Los prompts se guardan en UTF-8.** El runner los lee así, y si un `.md` quedó en la ANSI de
+  Windows **corta la corrida nombrando el archivo**, en vez de mandarle a la sesión un texto con
+  los acentos rotos. UTF-8 con o sin BOM, y UTF-16 con BOM, sirven todos.
 - **Todo lo que hay que decidir se pregunta al principio.** Contestás una vez y te podés ir de la
   máquina. Si una sesión falla, la corrida se corta ahí.
 
@@ -104,6 +109,77 @@ Dos advertencias que valen más que la tabla:
   la hace dudar más caro. Antes de subir el effort, revisá si lo que falta es contexto en el prompt.
 - **Una sesión que "escribe" pero tiene que adivinar el criterio en realidad juzga.** Si al escribir
   el prompt no pudiste dejar el criterio resuelto, la marca honesta es `opus`.
+
+---
+
+## `-Unattended`: la serie corre sola
+
+Con `-Unattended` la serie corre **sin supervisión**: no hay Remote Control, no hay `/exit`, y es cada
+sesión la que dice si la serie puede seguir. Es opt-in, se confirma a mano antes de arrancar, y sin
+el parámetro no cambia nada de lo de arriba.
+
+```bash
+pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Unattended
+```
+
+### El contrato: qué tiene que devolver una sesión
+
+Cada sesión termina devolviendo un resultado estructurado:
+
+```json
+{ "result": "ok", "reason": "una o dos frases" }
+```
+
+El runner se lo pide a la sesión por el system prompt, así que **no hay que escribirlo en el
+prompt**: llega solo. Lo que sí conviene que el prompt haga es dejar claro **qué cuenta como
+terminado**, porque eso es lo que la sesión va a juzgar.
+
+| `result` | Cuándo | Qué hace el runner |
+| --- | --- | --- |
+| `"ok"` | la sesión hizo lo que el prompt pedía y la siguiente puede construir sobre eso | sigue con la próxima |
+| `"stop"` | no lo logró, quedó a medias, o seguir sería una mala idea | **frena la serie** e imprime el motivo |
+
+El `reason` se imprime **siempre**, también cuando dice `ok`: es el registro de lo que pasó en cada
+sesión, que en el modo interactivo se pierde con el scrollback.
+
+**La serie sigue sólo si se cumple todo**: exit code 0, resultado presente y parseable, y `result`
+en `ok`. Cualquier otra cosa frena —incluida la ausencia de resultado—. Es a propósito: si la falta
+de señal se leyera como "seguí", una sesión que se colgó le arrastraría el error a todas las que
+vienen.
+
+### Las dos marcas que necesitan los prompts
+
+**`runner-requerido` es obligatoria** para correr en este modo, en cada prompt:
+
+```markdown
+<!-- runner-requerido: 2.0 -->
+```
+
+Es lo que dice que el prompt fue escrito conociendo el contrato de arriba. Sin ella, `-Unattended` no
+corre la serie y te nombra los prompts a los que les falta. Sin `-Unattended` la marca no molesta.
+
+**`automatico: no` es opcional**, y sirve para la sesión que **necesita** un humano: la que hace un
+deploy, la que borra algo, la que termina en una decisión tuya.
+
+```markdown
+<!-- automatico: no | hace deploy a producción -->
+```
+
+El motivo después del `|` es opcional y se imprime. La serie corre automática hasta la sesión
+anterior y **frena ahí, limpio**, diciéndote con qué `-StartFrom` seguir a mano. Se detecta al
+arrancar: antes de lanzar la primera sesión ya sabés dónde va a parar.
+
+### Lo que se pierde, y lo que no
+
+- **Se pierde la ventana en vivo.** No hay sesión en el celular mientras corre: pasás de "miro
+  mientras" a "miro después".
+- **No se pierden las sesiones.** Quedan guardadas igual que las interactivas, con su nombre, y el
+  runner imprime el `claude --resume <id>` de cada una.
+- **Los permisos los decide un clasificador** (`--permission-mode auto`), no vos. En este modo el
+  modo de permisos no se elige: pasar `-PermissionMode` o `-FullAuto` junto con `-Unattended` es un
+  error.
+- **No hay techo de gasto** salvo que se lo pongas con `-MaxBudgetUsd 5`. Sin nadie mirando, una
+  sesión trabada puede correr sin límite.
 
 ---
 

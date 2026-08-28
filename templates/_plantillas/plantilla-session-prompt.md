@@ -1,5 +1,6 @@
 <!-- modelo-sugerido: sonnet -->
 <!-- effort-sugerido: high -->
+<!-- runner-requerido: 2.0 -->
 
 <!--
 PLANTILLA de prompt de sesion. Copiala a `<serie>/NN-descripcion.md`.
@@ -7,15 +8,22 @@ PLANTILLA de prompt de sesion. Copiala a `<serie>/NN-descripcion.md`.
 - Borra las secciones que no apliquen, PERO no borres una para no tener que contestarla.
 - El prompt tiene que ser AUTOCONTENIDO: se ejecuta con contexto fresco, sin la conversacion previa.
   Un prompt que solo funciona "si estabas en la conversacion anterior" es un prompt roto.
-- LAS DOS MARCAS DE ARRIBA las lee `Run-SessionPrompts.ps1`:
+- LAS MARCAS DE ARRIBA las lee `Run-SessionPrompts.ps1`:
     * `modelo-sugerido`: `sonnet` u `opus`.
     * `effort-sugerido`: `low`, `medium`, `high`, `xhigh` o `max`.
+    * `runner-requerido`: la version del runner para la que se escribio este prompt. Solo la mira
+      `-Unattended` (la serie corriendo sola), y ahi es OBLIGATORIA: sin ella el runner se niega a
+      correr la serie sin supervision. Sin `-Unattended` no molesta. Dejala en `2.0` salvo que uses
+      algo que exija una version posterior.
+    * `automatico: no | motivo` (OPCIONAL, no esta arriba): agregala si esta sesion NECESITA un
+      humano -- hace un deploy, borra algo, o termina en una decision que no podes tomar sola.
+      Con `-Unattended` la serie corre hasta la sesion anterior y frena ahi, limpio.
   El modelo y el effort de la corrida son el TOPE. Si la sesion pide MENOS o lo mismo, arranca sola;
   si pide MAS, el script PARA Y PREGUNTA antes de la primera sesion. Si borras una marca, esa
   dimension corre con el tope. Un valor que no exista CORTA con un error, no se ignora.
   Regla practica: la sesion que ESCRIBE con el criterio ya resuelto aca va con `sonnet` y poco
   effort; la que JUZGA va con `opus`, y con `xhigh` o `max` si ademas el problema es dificil.
-- Borra este comentario (no las marcas de modelo y effort) antes de commitear.
+- Borra este comentario (NO las marcas de arriba) antes de commitear.
 -->
 
 # Sesión «NN» — «Título corto de la sesión»

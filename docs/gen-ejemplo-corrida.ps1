@@ -85,7 +85,10 @@ $lineas = @(
     @('green',    'Cerrada 09-decisiones-y-cierre.md (00:21:40).'),
     @('fg',       ''),
     @('green',    'Todos los prompts se ejecutaron correctamente (9 sesiones, 06:12:44).'),
-    @('darkgray', "series-estado.txt: 'invitaciones' marcada terminada.")
+    @('darkgray', "series-estado.txt: 'invitaciones' marcada terminada."),
+    @('fg',       ''),
+    @('yellow',   'Si cerrar con /exit te molesta, -Unattended corre la serie sola, pero te quedas sin'),
+    @('yellow',   'Remote Control mientras corre.')
 )
 
 # Sin fuente embebida: un SVG que GitHub muestra como <img> no puede bajar una externa, y

@@ -4,9 +4,64 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
-## [No publicado]
+## [2.0.0] — 2026-08-28
+
+**Sobre el número**: nada de esto rompe nada. Las series que ya existen corren igual, `-Unattended` es
+opt-in, y las marcas nuevas sólo pesan adentro de ese modo — por la definición de major de este
+repo, esto sería un minor. El major es una señal deliberada: el runner deja de ser sólo un
+encadenador de sesiones interactivas.
 
 ### Agregado
+
+- **Al terminar una corrida interactiva de más de una sesión, el runner avisa que existe
+  `-Unattended`.** Va al final y una sola vez —por sesión sería hostigar, y en una corrida que
+  falló sería lo último que querés leer—, y nombra lo que el modo cuesta (te quedás sin Remote
+  Control mientras corre) y no sólo lo que ahorra. **Sin comando para copiar**: la serie que
+  acaba de terminar no se vuelve a correr, así que lo único útil ahí es que el modo existe.
+
+- **`-Unattended`: la serie corre sola, sin Remote Control y sin `/exit`.** Hasta acá, pasar de una
+  sesión a la siguiente exigía que un humano cerrara la actual — cómodo desde el celular, pero
+  imposible de dejar corriendo. Con `-Unattended` cada sesión se lanza con `claude -p` y **devuelve**
+  si la serie puede seguir. Es **opt-in**, se confirma escribiendo `si`, y sin el parámetro no
+  cambia nada del comportamiento de siempre.
+  - **El contrato**: `{ "result": "ok" | "stop", "reason": "…" }`, pedido por
+    `--append-system-prompt` y validado por `--json-schema`. Va por el system prompt y no por el
+    README del repo destino a propósito: así llega siempre, sin depender de que el agente lea un
+    archivo ni de que el autor del prompt se acuerde.
+  - **La serie sigue sólo si se cumple todo**: exit code 0, resultado presente y parseable, y
+    `result` en `ok`. Todo lo demás frena, **incluida la ausencia de resultado**. Medido: en
+    headless el exit code vale 0 aunque el agente no haya podido hacer nada — el exit code
+    responde "¿la corrida produjo un resultado?", no "¿el resultado es el que pedías?".
+  - **Dos diagnósticos distintos**: *la sesión pidió frenar* (el mecanismo funcionando) y *la
+    sesión no dejó resultado* (una sesión que se colgó o se fue por las ramas). El `reason` se
+    imprime siempre, también cuando dice `ok`.
+  - **El modo de permisos no se elige**: es `auto`. `-PermissionMode` o `-FullAuto` junto con
+    `-Unattended` cortan, y un `permissionMode`/`fullAuto` del archivo de configuración se pisa
+    diciéndolo.
+  - **La consola muestra el stream de eventos** (`--output-format stream-json`), herramienta por
+    herramienta: el dibujo de la TUI no viaja porque lo hace la TUI, que en `-p` no existe.
+  - **`[Console]::OutputEncoding` se fija en UTF-8**, y se fija **antes de la primera línea que el
+    script imprime**. El resultado vuelve por el stdout de un proceso nativo, y con otra
+    codificación un `reason` con acentos se corrompe **en silencio**: el JSON parsea igual. Es la
+    misma clase de falla que el escapado de argumentos, del otro lado del canal. El lugar importa,
+    y está medido: el host de PowerShell se queda con el encoding que tenía cuando escribió por
+    primera vez, así que fijarlo al lado del loop arregla la lectura y deja la **escritura** en la
+    codificación vieja.
+  - **Cada sesión se lanza con su `--session-id`**, y el runner lo imprime: las sesiones headless
+    se guardan igual que las interactivas y se abren después con `claude --resume <id>`.
+
+- **Dos marcas nuevas en el encabezado de los prompts**, las dos validadas siempre (una marca mal
+  escrita corta, con o sin `-Unattended`) y exigidas sólo en ese modo:
+  - `<!-- runner-requerido: 2.0 -->` — **obligatoria** para correr sin supervisión. Un repo con las
+    plantillas de una versión anterior no tiene documentado el contrato del resultado, así que sus
+    prompts no pueden cumplirlo aunque quieran.
+  - `<!-- automatico: no | motivo -->` — **opcional**: esta sesión necesita un humano. La serie
+    corre hasta la anterior y frena ahí, limpio, diciendo con qué `-StartFrom` seguir. Se detecta
+    al arrancar: antes de la primera sesión ya sabés dónde va a parar.
+
+- **`-MaxBudgetUsd`**: techo de gasto por sesión (`--max-budget-usd`), sólo con `-Unattended`. Sin
+  nadie mirando, una sesión trabada puede correr sin límite. El valor viaja con punto decimal
+  aunque la máquina use coma.
 
 - **`-PermissionMode` elige el modo de permisos de la corrida, y `-Auto` es su atajo para el modo
   "Auto" de Claude Code Desktop.** El runner tenía dos escalones cableados —`--permission-mode
@@ -31,6 +86,28 @@ el [README](README.md#versionado-y-releases).
   actualizar la lista y volver a correrlo.
 
 ### Corregido
+
+- **Un prompt que no esté guardado en UTF-8 ahora corta la corrida, en vez de perder los acentos**
+  en silencio. El runner lee los `.md` con `-Encoding UTF8` explícito; si el archivo está en la
+  ANSI de Windows (cp1252, cp437), los bytes de los acentos no forman UTF-8 válido y .NET los
+  reemplaza por `U+FFFD`: la sesión recibía `ejecuci<?>n` y **nada fallaba**. Medido: UTF-8 con y
+  sin BOM, ASCII puro y UTF-16 **con** BOM se leen bien; cp1252 y cp437 pierden un carácter por
+  acento. La detección no adivina — intenta decodificar en UTF-8 estricto, así que un archivo sin
+  acentos nunca molesta —, y el UTF-16 sin BOM se detecta aparte por sus bytes NUL, porque pasaría
+  la validación y se leería como basura. El error nombra cada archivo y da el comando para
+  convertirlo. Se chequea **antes que nada**, incluso antes de las marcas.
+
+- **Las marcas de los prompts no se leían en un repo cuyos `.md` estuvieran en CRLF**, y no se
+  leían **en silencio**. El patrón terminaba en `[ \t]*$`, y `$` en modo multilínea matchea antes
+  del `\n`: con fin de línea CRLF queda un `\r` en el medio que `[ \t]*` no come. Alcanza con que el
+  repo destino no traiga `.gitattributes` —el caso normal, con el default de Git para Windows—
+  para que **ninguna** marca aplicara: ni `modelo-sugerido`, ni `effort-sugerido`, ni las dos
+  nuevas. Venía así desde que existen las marcas sugeridas. Hay un caso que escribe los prompts
+  en CRLF explícito y verifica las cuatro.
+
+- **La hora del log de `-Unattended` usaba el separador horario de la configuración regional.**
+  En un formato de fecha custom, `:` no es un literal, y con otra configuración la hora salía con
+  otro carácter. Ahora se formatea con `InvariantCulture`.
 
 - **Un número que no está en el menú de series ya no se toma como una ruta.** Elegir la `[7]` cuando
   el menú tiene tres series no daba error: el texto caía en la rama de "ruta pegada a mano",
