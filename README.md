@@ -466,6 +466,7 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | ponerla en UTF-8 **después** de la primera línea impresa | el caso del `reason` que se **escribe** — el host se queda con el encoding que tenía al escribir por primera vez |
 | ponerla en UTF-8 **sólo** con `-Unattended` | el caso de la corrida normal, donde lo que escribe la sesión pasa derecho a la pantalla |
 | que la ponga el runner pero no el instalador | el caso de la sesión del `CLAUDE.md` |
+| que el aviso de "viniendo de una versión vieja" salga siempre, o no salga nunca | el caso del aviso — sale sólo con la consola en ANSI, la salida redirigida y una versión previa anterior a la 2.0.1 |
 | leer la ausencia de resultado como `ok` | los dos casos de sesión que no deja resultado |
 | no exigir la marca `runner-requerido` | el caso de la serie que no la declara |
 | ignorar `automatico: no` | el caso de la corrida que frena antes de esa sesión |

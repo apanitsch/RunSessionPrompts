@@ -102,6 +102,10 @@ $ErrorActionPreference = 'Stop'
 # El producto vive aca. La misma constante esta en el runner, para su chequeo de version.
 $script:RepoGitHub = 'apanitsch/RunSessionPrompts'
 
+# La version en la que el runner empezo a poner la consola en UTF-8. Un runner anterior lee la
+# salida de este script en la ANSI de Windows, y no hay nada que hacer de este lado: se avisa.
+$script:VersionQueFijaElEncoding = [version]'2.0.1'
+
 # --- La consola tiene que ser UTF-8, y hay que fijarlo YA -------------------
 # Este script lanza UNA sesion de Claude Code (la del CLAUDE.md del destino), y todo lo que esa
 # sesion escribe vuelve por el stdout de un proceso NATIVO, que PowerShell decodifica con
@@ -542,6 +546,34 @@ if ($PSCmdlet.ShouldProcess($marcaPath, "escribir la marca de version")) {
 # encontrar, y si el repo venia de una copia vieja puede tener afirmaciones que hoy son falsas
 # (que se corre con 'powershell', que el script escapa las comillas siempre, que el corte es de
 # 30000 caracteres). Esta sesion arregla las dos cosas.
+# De que version se viene, para nombrarla. Sin marca no se puede saber: es una copia vieja,
+# copiada y pegada, y llegar hasta aca quiere decir que se paso -Force.
+function Get-VersionPrevia {
+    if ($marcaPrevia -and $marcaPrevia.version) { return "la $($marcaPrevia.version)" }
+    return "una copia sin marca de version"
+}
+
+# Tres cosas tienen que pasar juntas para que haya algo que avisar:
+#   - la consola no estaba en UTF-8 cuando arrancamos ($encodingPrevio quedo con la anterior),
+#   - nuestra salida esta redirigida, o sea que la esta leyendo otro proceso -- el runner, con su
+#     'pwsh @args | Out-Host'; corriendo esto a mano no hay quien la decodifique mal,
+#   - y ese otro proceso es un runner anterior a la 2.0.1, que es la version que empezo a leer en
+#     UTF-8. El que lanzo la actualizacion es el que estaba instalado en el destino, asi que su
+#     version es la de la marca previa.
+function Test-ConsolaHeredadaEnAnsi {
+    if (-not $encodingPrevio) { return $false }
+    if (-not [Console]::IsOutputRedirected) { return $false }
+    if ($esInstalacionNueva) { return $false }
+
+    if ($marcaPrevia -and $marcaPrevia.version) {
+        $previa = $null
+        if ([version]::TryParse(($marcaPrevia.version -replace '^v', ''), [ref]$previa)) {
+            return $previa -lt $script:VersionQueFijaElEncoding
+        }
+    }
+    return $true
+}
+
 function Invoke-SesionClaudeMd {
     $promptPath = Join-Path $origen 'templates\prompt-instalacion-claude-md.md'
     if (-not (Test-Path -LiteralPath $promptPath)) {
@@ -593,6 +625,16 @@ function Invoke-SesionClaudeMd {
     Write-Host ""
     Write-Host "Lanzo una sesion de Claude Code para dejar esto documentado en el CLAUDE.md de $repoRoot" -ForegroundColor Cyan
     Write-Host "  (modelo $Model, effort $Effort; -SkipClaudeMd para saltearlo)" -ForegroundColor DarkGray
+
+    # Lo unico que puede salir con los acentos rotos es lo que imprima ESTA sesion, y solo cuando
+    # se llego hasta aca por el -Update de un runner anterior a la 2.0.1: ese runner lee nuestra
+    # salida por un pipe y la decodifica en la ANSI de Windows. Los mensajes de este script no,
+    # porque son ASCII puro. Nada que arreglar de este lado -- pero se puede avisar.
+    if (Test-ConsolaHeredadaEnAnsi) {
+        Write-Host ""
+        Write-Host "Viniendo de $(Get-VersionPrevia), los acentos de lo que siga pueden salir rotos en esta consola." -ForegroundColor DarkGray
+        Write-Host "Es solo estetico, y se arregla a partir de esta version." -ForegroundColor Green
+    }
 
     Push-Location -LiteralPath $repoRoot
     try {

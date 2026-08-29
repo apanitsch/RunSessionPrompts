@@ -4,6 +4,18 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
+## [2.0.2] — 2026-08-29
+
+### Agregado
+
+- **Actualizando desde una versión anterior a la 2.0.1, el instalador avisa que los acentos pueden
+  salir rotos y que es sólo estético.** Ese caso no se puede arreglar —el que decodifica la salida
+  del instalador es el runner que lanzó la actualización, y uno anterior a la 2.0.1 lee en la ANSI
+  de Windows—, pero sí se puede saber: la versión de la que se viene está en la marca
+  `.session-prompts-version` del destino. El aviso aparece sólo cuando las tres cosas pasan juntas
+  (la consola no estaba en UTF-8, la salida está redirigida, y la versión previa es anterior a la
+  2.0.1), va justo antes de la sesión que puede salir con acentos rotos, y es una línea.
+
 ## [2.0.1] — 2026-08-28
 
 ### Corregido

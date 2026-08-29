@@ -23,6 +23,10 @@ $ErrorActionPreference = 'Stop'
 
 $script:Runner     = Join-Path (Split-Path -Parent $PSScriptRoot) 'Run-SessionPrompts.ps1'
 $script:Instalador = Join-Path (Split-Path -Parent $PSScriptRoot) 'Install-SessionPrompts.ps1'
+
+# La version desde la cual el runner lee en UTF-8, leida del instalador para no duplicarla.
+$script:VersionQueFijaElEncoding = ([regex]::Match((Get-Content -LiteralPath $script:Instalador -Raw -Encoding UTF8),
+    "(?m)^\s*\`$script:VersionQueFijaElEncoding\s*=\s*\[version\]'([^']+)'")).Groups[1].Value
 $script:Pasados   = 0
 $script:Omitidos  = 0
 $script:Fallados  = 0
@@ -2580,6 +2584,49 @@ Test-Case "el instalador pone la consola en UTF-8 antes de la sesion del CLAUDE.
 
     Assert-True (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG) "tenia que haber lanzado la sesion. Salida:`n$($r.Salida)"
     Assert-Match ([regex]::Escape($conAcentos)) $r.Salida "el informe de esa sesion es lo primero que ve el que instala"
+}
+
+# Lo que NO se puede arreglar de este lado se avisa. Viniendo de un runner anterior a la 2.0.1, el
+# que lee la salida del instalador es ese runner, en la ANSI de Windows: el informe de la sesion
+# del CLAUDE.md sale roto igual. El instalador lo sabe --la version previa esta en la marca-- y
+# pone una linea antes, para que nadie crea que se corrompio algo.
+
+Test-Case "viniendo de un runner viejo, el instalador avisa que el mojibake es solo estetico" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $repo = New-RepoVacio
+    $marca = Join-Path $repo 'docs\session-prompts\.session-prompts-version'
+    $env:FAKE_CLAUDE_LOG = Join-Path $repo 'claude.log'
+
+    # Una instalacion cualquiera, para tener runner y marca. Despues se le cambia la version a
+    # mano: es la unica parte de la marca que mira este aviso, y asi el caso no necesita bajar
+    # ningun release viejo.
+    Invoke-Instalador $repo @() | Out-Null
+    $ansi  = "[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(1252)"
+    $utf8  = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false)"
+    $args_ = @('-ClaudeCommand', $script:EcoExe)
+
+    function Set-VersionDeLaMarca([string]$version) {
+        $j = Get-Content -LiteralPath $marca -Raw -Encoding UTF8 | ConvertFrom-Json
+        $j.version = $version
+        Set-Content -LiteralPath $marca -Value ($j | ConvertTo-Json) -Encoding UTF8
+    }
+
+    Set-VersionDeLaMarca '1.7.0'
+    $viejo = Invoke-Instalador $repo $args_ $ansi
+    Assert-Match 'solo estetico' $viejo.Salida "viniendo de la 1.7.0 y con la consola en ANSI, hay que avisar"
+    Assert-Match '1\.7\.0' $viejo.Salida "y nombrar de que version se viene"
+
+    # Con la consola ya en UTF-8 no hay nada que avisar, aunque se venga de la misma version vieja.
+    Set-VersionDeLaMarca '1.7.0'
+    $enUtf8 = Invoke-Instalador $repo $args_ $utf8
+    Assert-NotMatch 'solo estetico' $enUtf8.Salida "en una consola UTF-8 no sale roto nada"
+
+    # Y viniendo de un runner que ya lo arregla, tampoco: ese lee en UTF-8.
+    Set-VersionDeLaMarca "$($script:VersionQueFijaElEncoding)"
+    $nuevo = Invoke-Instalador $repo $args_ $ansi
+    Assert-NotMatch 'solo estetico' $nuevo.Salida "desde la $($script:VersionQueFijaElEncoding) el runner lee en UTF-8"
 }
 
 # --- Cierre ---------------------------------------------------------------

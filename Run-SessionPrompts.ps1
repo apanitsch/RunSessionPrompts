@@ -383,7 +383,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '2.0.1'
+$script:RunnerVersion = '2.0.2'
 
 # La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
 # esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.

@@ -90,7 +90,10 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   salida del instalador por un pipe) el texto sale roto igual: manda el proceso pegado a la
   consola. Lo que cambia entre los dos modos es qué pasa si no se puede fijar: en `-Unattended` es
   fatal, porque ahí el canal se parsea; en una corrida normal se sigue, porque lo que se degrada es
-  el dibujo y los bytes son recuperables. Los dos la restauran al terminar, salgan por donde salgan.
+  el dibujo y los bytes son recuperables. Los dos la restauran al terminar, salgan por donde salgan. Lo que **no** se puede arreglar —venir del `-Update` de un runner anterior a
+  la 2.0.1, que lee la salida del instalador en la ANSI— se **avisa**: una línea antes de la sesión
+  del `CLAUDE.md`, diciendo que es sólo estético. El instalador lo sabe porque la versión previa
+  está en la marca `.session-prompts-version` del destino.
 
 - **Un prompt que no sea UTF-8 corta la corrida.** Se valida con una decodificación UTF-8
   estricta antes que nada, y el UTF-16 sin BOM aparte por sus bytes NUL. No se adivina la
