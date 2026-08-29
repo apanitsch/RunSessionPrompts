@@ -464,6 +464,8 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | aceptar el shim `.cmd` tal cual | los dos casos de shim |
 | no poner la consola en UTF-8 en `-Unattended` | el caso del `reason` que se **lee** con acentos |
 | ponerla en UTF-8 **después** de la primera línea impresa | el caso del `reason` que se **escribe** — el host se queda con el encoding que tenía al escribir por primera vez |
+| ponerla en UTF-8 **sólo** con `-Unattended` | el caso de la corrida normal, donde lo que escribe la sesión pasa derecho a la pantalla |
+| que la ponga el runner pero no el instalador | el caso de la sesión del `CLAUDE.md` |
 | leer la ausencia de resultado como `ok` | los dos casos de sesión que no deja resultado |
 | no exigir la marca `runner-requerido` | el caso de la serie que no la declara |
 | ignorar `automatico: no` | el caso de la corrida que frena antes de esa sesión |
@@ -482,6 +484,15 @@ codificación equivocada, los bytes que salen son iguales a los que entraron y e
 El caso de lectura desvía la escritura a un archivo en UTF-8 explícito; el de escritura hace que el
 `.exe` emita la línea en ASCII puro, con los acentos como escapes del JSON, para que lo único
 medido sea con qué codificación imprime el runner.
+
+Los otros dos casos miran el mismo canal cuando **nadie lo parsea** —una corrida normal, y el
+informe de la sesión del `CLAUDE.md`—, donde lo que se rompe es cómo se ve. Son dos, uno por
+ejecutable, porque cada proceso tiene que arreglarse solo: **medido**, con el runner en la ANSI y
+el instalador en UTF-8 la salida sale rota lo mismo, porque manda el proceso pegado a la consola.
+
+Esos dos **no** se miden por el pipe del proceso hijo, y no es un detalle: por ese pipe un hijo
+arreglado se ve roto y uno roto se ve bien, según cómo esté la consola donde corre la suite. Se
+miden con un archivo que escribe el propio hijo, en UTF-8 explícito.
 
 El `.exe` de prueba lo compila **Windows PowerShell 5.1**, que viene con Windows: PowerShell 7 no
 puede generar ejecutables de consola. Es el único uso de 5.1 en el proyecto, y es para construir el

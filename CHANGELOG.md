@@ -4,6 +4,39 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
+## [2.0.1] — 2026-08-28
+
+### Corregido
+
+- **Los acentos de lo que escribe una sesión ya no se dibujan como mojibake en una consola que no
+  esté en UTF-8.** Hasta acá, `[Console]::OutputEncoding` se fijaba **sólo** con `-Unattended` —el
+  modo donde el resultado se parsea y un `reason` roto pasa en silencio—, así que una corrida
+  normal, y sobre todo el informe de la sesión del `CLAUDE.md` que lanza el instalador, salían
+  `ejecuci├³n` en una consola en cp437 o cp850. **Nada se corrompía**: los bytes que emite
+  `claude.exe` son UTF-8 correcto y una tabla ANSI es una biyección byte↔carácter, así que lo
+  único degradado era el dibujo — pero si la corrida se manda a un archivo, el mojibake queda
+  escrito ahí.
+
+  El arreglo va en **los dos** ejecutables, y hacía falta que fuera en los dos: **medido**, con el
+  runner en la ANSI y el instalador en UTF-8 —que es exactamente el camino de `-Update`, donde el
+  runner corre al instalador como proceso hijo y le lee la salida por un pipe— el texto sale roto
+  igual, porque manda el proceso pegado a la consola.
+
+  | runner | instalador | lo que se ve |
+  | --- | --- | --- |
+  | ANSI | ANSI | roto |
+  | ANSI | UTF-8 | **roto igual** |
+  | UTF-8 | ANSI | bien |
+  | UTF-8 | UTF-8 | bien |
+
+  Lo que **no** cambia: en `-Unattended` no poder fijar la codificación sigue siendo fatal y la
+  corrida no arranca. En una corrida normal se intenta igual y, si el host no deja, sigue: ahí lo
+  que está en juego es cómo se ve, no lo que se lee.
+
+- **La consola vuelve como estaba** — los dos scripts la restauran al terminar, salgan por donde
+  salgan. Antes el runner sólo la restauraba si llegaba al final del loop de sesiones, así que un
+  `-Update` (que sale antes) la dejaba cambiada.
+
 ## [2.0.0] — 2026-08-28
 
 **Sobre el número**: nada de esto rompe nada. Las series que ya existen corren igual, `-Unattended` es

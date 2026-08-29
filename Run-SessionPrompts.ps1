@@ -383,7 +383,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '2.0.0'
+$script:RunnerVersion = '2.0.1'
 
 # La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
 # esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.
@@ -394,11 +394,22 @@ if ($Version) {
     exit 0
 }
 
-# --- En -Unattended el canal tiene que ser UTF-8, y hay que fijarlo YA -------
-# El resultado de cada sesion vuelve por el stdout de un proceso NATIVO, y PowerShell lo decodifica
-# con [Console]::OutputEncoding. Si esa no es UTF-8, un 'reason' con acentos llega roto -- y llega
-# roto EN SILENCIO, porque el JSON sigue parseando igual. Es la misma clase de falla que el escapado
-# de argumentos, del otro lado del canal.
+# --- La consola tiene que ser UTF-8, y hay que fijarlo YA -------------------
+# TODO lo que escribe una sesion de Claude Code vuelve por el stdout de un proceso NATIVO, y
+# PowerShell lo decodifica con [Console]::OutputEncoding. Si esa no es UTF-8, cada acento llega
+# como mojibake. No depende de -Unattended, pero lo que esta en juego SI es distinto:
+#
+#   - En -Unattended el canal se PARSEA. Un 'reason' con acentos llega roto EN SILENCIO, porque el
+#     JSON sigue parseando igual: es la misma clase de falla que el escapado de argumentos, del
+#     otro lado del canal. Ahi no poder fijar la codificacion es fatal y la corrida no arranca.
+#   - En una corrida normal el canal solo se MIRA. Una tabla ANSI es una biyeccion byte<->caracter,
+#     asi que los bytes originales siguen ahi y lo que se degrada es el dibujo, no el texto: se
+#     intenta igual, y si el host no deja, la corrida sigue.
+#
+# Y manda el proceso pegado a la consola, no el que lanza el .exe: MEDIDO con el runner en la ANSI
+# y el instalador en UTF-8 (que es lo que pasa en -Update), la salida de la sesion del CLAUDE.md
+# sale rota lo mismo, porque el instalador la reescribe en UTF-8 y el runner la lee en ANSI. Por
+# eso el bloque vive en los dos lados.
 #
 # Va ACA ARRIBA, antes de la primera linea de salida del script, y no al lado del loop: MEDIDO en
 # pwsh 7.6.5 con -File, el host se queda con el encoding que tenia cuando escribio por primera vez.
@@ -408,17 +419,24 @@ if ($Version) {
 # Es exactamente el mismo motivo por el que los prompts se leen con -Encoding UTF8 explicito: para
 # que la corrida no dependa de un default que puede ser otro en otra maquina.
 $encodingPrevio = $null
-if ($Unattended -and [Console]::OutputEncoding.CodePage -ne 65001) {
+if ([Console]::OutputEncoding.CodePage -ne 65001) {
     try {
         $encodingPrevio = [Console]::OutputEncoding
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     } catch {
-        Write-Host "No pude poner la consola en UTF-8 ([Console]::OutputEncoding = $([Console]::OutputEncoding.WebName))." -ForegroundColor Red
-        Write-Host "En -Unattended el resultado de cada sesion vuelve por ahi: con otra codificacion, un texto" -ForegroundColor Red
-        Write-Host "con acentos se corrompe sin que nada falle. Corre esto en una consola UTF-8." -ForegroundColor Red
-        exit 1
+        $encodingPrevio = $null
+        if ($Unattended) {
+            Write-Host "No pude poner la consola en UTF-8 ([Console]::OutputEncoding = $([Console]::OutputEncoding.WebName))." -ForegroundColor Red
+            Write-Host "En -Unattended el resultado de cada sesion vuelve por ahi: con otra codificacion, un texto" -ForegroundColor Red
+            Write-Host "con acentos se corrompe sin que nada falle. Corre esto en una consola UTF-8." -ForegroundColor Red
+            exit 1
+        }
     }
 }
+
+# Desde aca hasta el final: la consola es del usuario, y hay que devolversela como estaba salga la
+# corrida por donde salga. 'exit' desenrolla el try, asi que el finally corre igual (medido).
+try {
 
 # --- De donde sale una version nueva --------------------------------------
 # El producto vive en un repo de GitHub y se publica por releases. El runner no se actualiza
@@ -2208,7 +2226,6 @@ foreach ($item in $plan) {
 }
 finally {
     Pop-Location
-    if ($encodingPrevio) { try { [Console]::OutputEncoding = $encodingPrevio } catch { } }
 }
 
 $reloj.Stop()
@@ -2256,4 +2273,9 @@ if (-not $desatendida -and $plan.Count -gt 1) {
     Write-Host ""
     Write-Host "Si cerrar con /exit te molesta, -Unattended corre la serie sola, pero te quedas sin" -ForegroundColor Yellow
     Write-Host "Remote Control mientras corre." -ForegroundColor Yellow
+}
+
+}
+finally {
+    if ($encodingPrevio) { try { [Console]::OutputEncoding = $encodingPrevio } catch { } }
 }

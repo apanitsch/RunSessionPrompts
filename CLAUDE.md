@@ -70,7 +70,8 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   - **El vocabulario es chico y no ejecutable**: enum de dos valores y un `reason` que se imprime,
     nunca se parsea. El JSON lo escribe un agente que estuvo leyendo el repo; darle verbos sería
     darle a ese contenido un canal para dirigir el runner.
-  - **`[Console]::OutputEncoding` se fija en UTF-8, y se fija ARRIBA DE TODO.** El canal de vuelta
+  - **`[Console]::OutputEncoding` se fija en UTF-8, y se fija ARRIBA DE TODO.** (Desde la 2.0.1 se
+    fija siempre, no sólo acá, y también en el instalador — el detalle está más abajo.) El canal de vuelta
     es el stdout de un proceso nativo: con otra codificación, un `reason` con acentos se corrompe y
     el JSON parsea igual. Y el lugar importa — medido en pwsh 7.6.5 con `-File`: **el host se queda
     con el encoding que tenía cuando escribió por primera vez**, así que fijarlo al lado del loop
@@ -82,6 +83,15 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   - **No se usa `Start-Process`** para poder poner un timeout: sus reglas de comillas son otras y
     volvería a abrir la clase de corrupción que este repo existe para no cometer. El techo es
     `-MaxBudgetUsd`, que el CLI corta con exit code distinto de cero.
+- **La consola se pone en UTF-8 en los dos ejecutables, y en los dos arriba de todo.** El runner lo
+  hace siempre, no sólo en `-Unattended`: por ese mismo stdout vuelve todo lo que la sesión
+  escribe. Y el instalador lo hace por su cuenta porque **no alcanza con uno solo** — medido, con
+  el runner en la ANSI y el instalador en UTF-8 (el camino de `-Update`, donde el runner lee la
+  salida del instalador por un pipe) el texto sale roto igual: manda el proceso pegado a la
+  consola. Lo que cambia entre los dos modos es qué pasa si no se puede fijar: en `-Unattended` es
+  fatal, porque ahí el canal se parsea; en una corrida normal se sigue, porque lo que se degrada es
+  el dibujo y los bytes son recuperables. Los dos la restauran al terminar, salgan por donde salgan.
+
 - **Un prompt que no sea UTF-8 corta la corrida.** Se valida con una decodificación UTF-8
   estricta antes que nada, y el UTF-16 sin BOM aparte por sus bytes NUL. No se adivina la
   codificación ni se convierte sola: leer un prompt en otra codificación es mandarle a la

@@ -163,6 +163,35 @@ function ConvertTo-ArgsCitados([string[]]$argumentos) {
     }
 }
 
+# Corre un script en un pwsh hijo con la consola en Windows-1252, y devuelve lo que IMPRIMIO,
+# leido de un archivo que ese mismo hijo escribe en UTF-8 explicito.
+#
+# Lo impreso NO se mide por el pipe del proceso hijo, a proposito: ese pipe lo decodifica la consola
+# donde corre la suite, y ahi el resultado depende de como este ESA consola y no de lo que hace el
+# script. MEDIDO, con el emisor mandando bytes UTF-8:
+#
+#   padre ANSI  + hijo ANSI  -> roto     padre ANSI  + hijo UTF-8 -> roto igual
+#   padre UTF-8 + hijo ANSI  -> bien     padre UTF-8 + hijo UTF-8 -> bien
+#
+# O sea que por el pipe un hijo arreglado se ve roto, y uno roto se ve bien. El archivo saca esa
+# variable del medio: adentro del hijo, con la codificacion escrita a mano.
+function Invoke-EnConsolaAnsi([string]$script, [string[]]$argumentos, [string]$archivoSalida, [string]$stdin) {
+    $citados = ConvertTo-ArgsCitados $argumentos
+    $linea = "[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(1252); " +
+             "& '" + ($script -replace "'", "''") + "' " + ($citados -join ' ') +
+             " *>&1 | Out-String -Width 20000 | " +
+             "Set-Content -LiteralPath '" + ($archivoSalida -replace "'", "''") + "' -Encoding utf8"
+
+    if ($null -ne $stdin) { $stdin | & pwsh -NoProfile -Command $linea | Out-Null }
+    else                  { & pwsh -NoProfile -Command $linea | Out-Null }
+
+    $texto = ''
+    if (Test-Path -LiteralPath $archivoSalida) {
+        $texto = Get-Content -LiteralPath $archivoSalida -Raw -Encoding UTF8
+    }
+    return [pscustomobject]@{ Salida = $texto; ExitCode = $LASTEXITCODE }
+}
+
 # Corre el runner en un pwsh hijo (asi el exit code y los Read-Host quedan aislados).
 #
 # -Prologo: codigo que corre en ESE pwsh antes del runner. Sirve para poner un doble de un cmdlet
@@ -2503,6 +2532,54 @@ Test-Case "el runner ESCRIBE en UTF-8, y lo fija antes de su primera linea" {
 
     Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
     Assert-Match ([regex]::Escape($esperado)) $r.Salida "si el encoding se fija tarde, el host sigue escribiendo en la ANSI vieja"
+}
+
+# Los dos casos de arriba miran el canal que se PARSEA, que solo existe en -Unattended. Pero por
+# ese mismo stdout vuelve todo lo que la sesion escribe en una corrida normal, y la sesion del
+# CLAUDE.md que lanza el instalador: ahi nadie parsea nada, y aun asi la consola tiene que estar en
+# UTF-8, porque si no cada acento se dibuja como mojibake.
+#
+# Van dos casos y no uno porque son dos procesos distintos y cada uno tiene que arreglarse solo:
+# MEDIDO, con el runner en la ANSI y el instalador en UTF-8 la salida sale rota lo mismo.
+
+Test-Case "el runner pone la consola en UTF-8 tambien SIN -Unattended" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-utf8-atendida' @{ '01-uno.md' = 'hola' }
+
+    $conAcentos = "ejecuci" + [char]0x00F3 + "n " + [char]0x00F1 + "andu compa" + [char]0x00F1 + "ero"
+    $env:FAKE_CLAUDE_LOG = $f.Log
+    $env:FAKE_CLAUDE_STREAM = $conAcentos
+    try {
+        $r = Invoke-EnConsolaAnsi $f.Runner @('-SkipUpdateCheck', '-PromptsPath', $serie, '-StartFrom', '0',
+                                              '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $script:EcoExe) `
+                                  (Join-Path $f.Repo 'consola.txt') "`n`n"
+    } finally {
+        Remove-Item Env:\FAKE_CLAUDE_STREAM -ErrorAction SilentlyContinue
+    }
+
+    Assert-Match ([regex]::Escape($conAcentos)) $r.Salida "lo que escribe la sesion pasa derecho a la pantalla: tiene que llegar entero"
+}
+
+Test-Case "el instalador pone la consola en UTF-8 antes de la sesion del CLAUDE.md" {
+    Initialize-EcoExe
+    if (-not $script:EcoExe) { Skip-Case $script:EcoMotivo }
+
+    $repo = New-RepoVacio
+    $conAcentos = "ejecuci" + [char]0x00F3 + "n " + [char]0x00F1 + "andu compa" + [char]0x00F1 + "ero"
+    $env:FAKE_CLAUDE_LOG = Join-Path $repo 'claude.log'
+    $env:FAKE_CLAUDE_STREAM = $conAcentos
+    try {
+        $r = Invoke-EnConsolaAnsi $script:Instalador @('-Repo', $repo, '-ClaudeCommand', $script:EcoExe) `
+                                  (Join-Path $repo 'consola.txt')
+    } finally {
+        Remove-Item Env:\FAKE_CLAUDE_STREAM -ErrorAction SilentlyContinue
+    }
+
+    Assert-True (Test-Path -LiteralPath $env:FAKE_CLAUDE_LOG) "tenia que haber lanzado la sesion. Salida:`n$($r.Salida)"
+    Assert-Match ([regex]::Escape($conAcentos)) $r.Salida "el informe de esa sesion es lo primero que ve el que instala"
 }
 
 # --- Cierre ---------------------------------------------------------------

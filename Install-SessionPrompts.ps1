@@ -102,6 +102,41 @@ $ErrorActionPreference = 'Stop'
 # El producto vive aca. La misma constante esta en el runner, para su chequeo de version.
 $script:RepoGitHub = 'apanitsch/RunSessionPrompts'
 
+# --- La consola tiene que ser UTF-8, y hay que fijarlo YA -------------------
+# Este script lanza UNA sesion de Claude Code (la del CLAUDE.md del destino), y todo lo que esa
+# sesion escribe vuelve por el stdout de un proceso NATIVO, que PowerShell decodifica con
+# [Console]::OutputEncoding. Con la ANSI de Windows, cada acento del informe final llega como
+# mojibake: nada falla, pero lo primero que ve el que instala es un texto roto.
+#
+# No es cosmetico de un solo lado: si la salida se manda a un archivo, el mojibake queda escrito.
+# (Los bytes son recuperables -- una tabla ANSI es una biyeccion byte<->caracter -- pero nadie
+# tendria que tener que recuperarlos.)
+#
+# Va ACA ARRIBA, antes de la primera linea de salida: MEDIDO en pwsh 7.6.5 con -File, el host se
+# queda con el encoding que tenia cuando escribio por primera vez, asi que fijarlo mas abajo
+# arregla la LECTURA de lo que dice la sesion y deja la ESCRITURA en la codificacion vieja. Es la
+# misma nota que esta en el encabezado del runner, y por el mismo motivo.
+#
+# Lo hace tambien el runner, y no alcanza con uno solo: MEDIDO, con el runner en la ANSI y el
+# instalador en UTF-8 -- que es el camino de -Update, donde el runner corre a este script como
+# proceso hijo y lee su salida por un pipe -- la sesion sale rota igual. Manda el proceso pegado a
+# la consola; este bloque cubre el caso de correr el instalador a mano.
+$encodingPrevio = $null
+if ([Console]::OutputEncoding.CodePage -ne 65001) {
+    try {
+        $encodingPrevio = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    } catch {
+        # Que no se pueda no es motivo para no instalar: lo que se degrada es el dibujo de una
+        # salida que nadie parsea. Los archivos que copia este script no pasan por aca.
+        $encodingPrevio = $null
+    }
+}
+
+# Desde aca hasta el final: la consola es del usuario, y hay que devolversela como estaba salga
+# esto por donde salga. 'exit' desenrolla el try, asi que el finally corre igual (medido).
+try {
+
 # --- Instalar desde un release en vez de desde esta carpeta ----------------
 # La idea es que ESTE archivo solo alcance: lo bajas suelto, lo corres, y el se encarga de traer
 # el resto. Lo que hace es bajar el .zip del tag, descomprimirlo, y REEJECUTAR el instalador que
@@ -600,4 +635,9 @@ if ($esInstalacionNueva) {
     Write-Host "  3. pwsh -File `"$runnerDestino`"" -ForegroundColor DarkGray
 } else {
     Write-Host "Actualizado a $versionOrigen. Revisa el CHANGELOG del runner por si cambio algo que uses." -ForegroundColor Cyan
+}
+
+}
+finally {
+    if ($encodingPrevio) { try { [Console]::OutputEncoding = $encodingPrevio } catch { } }
 }
