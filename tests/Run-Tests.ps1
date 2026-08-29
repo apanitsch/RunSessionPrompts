@@ -2136,6 +2136,24 @@ Test-Case "una sesion que devuelve 'stop' frena la serie, y el motivo se imprime
     Assert-Match 'no encontre el archivo de configuracion' $r.Salida "y el motivo que dio"
 }
 
+Test-Case "cuando la sesion sale con error, -Unattended repite el comando para retomarla" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-error' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeExit 7
+    Assert-Equal 7 $r.ExitCode "el exit code de la sesion se propaga. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "la segunda no arranca"
+
+    # El mismo id con el que se lanzo, no uno nuevo: es lo unico que hace util al mensaje.
+    $id = Get-ArgValue (Get-Sesiones $f)[0] '--session-id'
+    Assert-Match ([regex]::Escape("claude --resume $id")) $r.Salida "repite el comando con el id de la sesion que fallo"
+    Assert-Match 'para retomar' $r.Salida "y dice para que sirve"
+}
+
 Test-Case "una sesion que no deja resultado frena, y se distingue de la que pidio frenar" {
     $f = New-Fixture
     $serie = New-Serie $f 'serie-mudo' @{

@@ -4,6 +4,16 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
+## [No publicado]
+
+### Agregado
+
+- **Cuando una sesión de `-Unattended` sale con error y la serie se corta, el
+  `claude --resume <id>` se repite en el mensaje del corte.** El id ya se imprimía al lanzar la
+  sesión, pero entre ese renglón y el del error queda toda la salida de la sesión en el medio: para
+  retomarla había que ir a buscarlo scrolleando. Los otros dos cortes de `-Unattended` —la sesión
+  que pide frenar y la que no deja resultado— ya lo repetían.
+
 ## [2.0.2] — 2026-08-29
 
 ### Agregado

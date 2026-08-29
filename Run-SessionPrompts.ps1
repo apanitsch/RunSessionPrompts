@@ -2183,6 +2183,11 @@ foreach ($item in $plan) {
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Fallo $($p.Name) (exit $LASTEXITCODE). Corto la ejecucion." -ForegroundColor Red
+        # El id ya se imprimio al lanzar la sesion, pero en -Unattended entre ese renglon y este
+        # quedo toda la salida de la sesion en el medio. Se repite para que este a mano.
+        if ($desatendida) {
+            Write-Host "  claude --resume $sessionId   (para retomar)" -ForegroundColor DarkGray
+        }
         exit $LASTEXITCODE
     }
 
