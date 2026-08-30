@@ -2072,6 +2072,137 @@ Test-Case "el formato que ya usan los repos existentes se lee sin quejas" {
     Assert-Equal 1 (Get-Sesiones $f).Count "y la serie corre"
 }
 
+Test-Case "al cerrar, el comentario queda alineado con la columna que ya usa el archivo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'corta' @{ '01-uno.md' = 'x' }
+
+    # El '#' arranca en la columna 42 en las tres lineas ya cerradas. 'corta' es un nombre bien
+    # mas corto: con tres espacios fijos el comentario quedaria muy a la izquierda.
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @(
+        '# encabezado',
+        'terminada - site-paraguas                 # cerrada 2026-07-27',
+        'terminada - site-checkout                 # cerrada 2026-08-06',
+        'terminada - reserva-datos                 # cerrada 2026-08-26',
+        'pendiente 1 corta                         # la serie de prueba'
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $linea = @(Get-Content -LiteralPath $estadoPath -Encoding UTF8 | Where-Object { $_ -match '^terminada\s+-\s+corta\b' })
+    Assert-Equal 1 $linea.Count "la serie quedo cerrada"
+    Assert-Equal 42 $linea[0].IndexOf('#') "el comentario arranca en la misma columna que el resto"
+}
+
+Test-Case "la columna que se copia es la mas frecuente, no la que empuja un nombre largo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'corta' @{ '01-uno.md' = 'x' }
+
+    # Una sola linea desalineada -- la de nombre largo, que no entraba antes de la columna 42 --
+    # no puede arrastrar a las que vienen despues.
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @(
+        'terminada - site-paraguas                 # cerrada 2026-07-27',
+        'terminada - site-checkout                 # cerrada 2026-08-06',
+        'terminada - documentacion-poda-y-consistencia   # cerrada 2026-08-25',
+        'pendiente 1 corta'
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $linea = @(Get-Content -LiteralPath $estadoPath -Encoding UTF8 | Where-Object { $_ -match '^terminada\s+-\s+corta\b' })[0]
+    Assert-Equal 42 $linea.IndexOf('#') "gana la columna de las dos alineadas, no la 47 de la linea larga"
+}
+
+Test-Case "un nombre que no entra antes de la columna corre el comentario, no lo pisa" {
+    $f = New-Fixture
+    $nombre = 'una-serie-con-el-nombre-larguisimo-que-no-entra'
+    $serie = New-Serie $f $nombre @{ '01-uno.md' = 'x' }
+
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @(
+        'terminada - site-paraguas                 # cerrada 2026-07-27',
+        'terminada - site-checkout                 # cerrada 2026-08-06',
+        "pendiente 1 $nombre"
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $linea = @(Get-Content -LiteralPath $estadoPath -Encoding UTF8 | Where-Object { $_ -match '^terminada\s+-\s+' })[-1]
+    Assert-Match ([regex]::Escape("terminada - $nombre   # cerrada ")) $linea "el nombre entero, y el comentario corrido a la derecha"
+}
+
+Test-Case "sin ninguna linea con comentario no hay columna que copiar: quedan tres espacios" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'corta' @{ '01-uno.md' = 'x' }
+
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @(
+        '# un encabezado no es una linea de datos, y no define ninguna columna',
+        'terminada - otra-serie',
+        'pendiente 1 corta'
+    )
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $linea = @(Get-Content -LiteralPath $estadoPath -Encoding UTF8 | Where-Object { $_ -match '^terminada\s+-\s+corta\b' })[0]
+    Assert-Match 'terminada - corta   # cerrada ' $linea "el formato de siempre"
+}
+
+Test-Case "si la linea ya decia exactamente eso, el archivo no se toca ni se avisa nada" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'ya-cerrada' @{ '01-uno.md' = 'x' }
+
+    # El caso real: la ultima sesion de la serie la cierra ella misma y comitea, y este bloque
+    # del runner corre despues. Si reescribe, lo unico que cambia es el espaciado -- y eso queda
+    # como una diferencia sin contenido en el repo destino.
+    $hoy = (Get-Date).ToString('yyyy-MM-dd')
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @(
+        'terminada - site-paraguas                 # cerrada 2026-07-27',
+        "terminada - ya-cerrada                    # cerrada $hoy"
+    )
+    git -C $f.Repo add -A 2>&1 | Out-Null
+    git -C $f.Repo commit -qm "estado" 2>&1 | Out-Null
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    $estadoRel = 'docs/session-prompts/series-estado.txt'
+    Assert-Equal 0 @(git -C $f.Repo status --porcelain -- $estadoRel).Count "el archivo tiene que quedar igual que comiteado"
+    Assert-Match 'ya figuraba terminada' $r.Salida "y se dice que no se toco"
+    Assert-NotMatch 'Queda sin comitear' $r.Salida "no puede pedir un commit de algo que no cambio"
+}
+
+Test-Case "al cerrar imprime el comando de commit, y NO lo ejecuta" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-sin-comitear' @{ '01-uno.md' = 'x' }
+
+    # El archivo de estado tiene que estar comiteado ANTES: si no, queda sin seguimiento y
+    # 'git status' lo mostraria igual, y el caso no probaria nada.
+    $estadoPath = Join-Path $f.SeriesRoot 'series-estado.txt'
+    Set-Content -LiteralPath $estadoPath -Encoding UTF8 -Value @('pendiente 1 serie-sin-comitear')
+    git -C $f.Repo add -A 2>&1 | Out-Null
+    git -C $f.Repo commit -qm "estado" 2>&1 | Out-Null
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    Assert-Match 'Queda sin comitear a proposito' $r.Salida "dice que el cambio queda en el working tree"
+    Assert-Match ([regex]::Escape('commit -m "docs(series): cerrar serie-sin-comitear" -- series-estado.txt')) $r.Salida `
+        "y el comando, acotado a ese unico archivo"
+    Assert-NotMatch 'commit -a' $r.Salida "nunca un commit que barra todo el arbol"
+
+    $estadoRel = 'docs/session-prompts/series-estado.txt'
+    $pendiente = @(git -C $f.Repo status --porcelain -- $estadoRel)
+    Assert-Equal 1 $pendiente.Count "el runner no commitea: el cambio tiene que seguir sin comitear"
+    Assert-Match '^\s*M' $pendiente[0] "y el archivo figura modificado"
+}
+
 # --- -Unattended: la serie corre sola ---------------------------------------
 # Todos los casos de aca abajo pasan 'si' por stdin: el modo se confirma a mano y sin eso no
 # arranca (hay un caso que lo verifica).

@@ -1048,6 +1048,40 @@ function Get-SeriesEstado {
     return $mapa
 }
 
+# En que columna arranca el comentario en el resto del archivo. Un numero fijo desalinea un
+# .txt que un humano lee y edita, y el desalineado despues aparece como ruido en el diff. Se
+# copia lo que el archivo ya hace: la columna MAS FRECUENTE, no la mayor -- un nombre de serie
+# largo empuja su propio '#' a la derecha sin ser por eso la convencion del archivo.
+#
+# Devuelve 0 si no hay ninguna linea con comentario: ahi no hay convencion que copiar.
+function Get-ColumnaDeComentario([string[]]$lineas) {
+    $cuenta = @{}
+    foreach ($linea in $lineas) {
+        $m = [regex]::Match($linea, $script:LineaDeEstado)
+        if (-not $m.Success) { continue }
+        if (-not $m.Groups[4].Success) { continue }
+        $col = $m.Groups[4].Index
+        if ($cuenta.ContainsKey($col)) { $cuenta[$col]++ } else { $cuenta[$col] = 1 }
+    }
+    if ($cuenta.Count -eq 0) { return 0 }
+
+    # Empate: gana la columna mas chica, para que el resultado no dependa del orden del hashtable.
+    $mejor = @($cuenta.GetEnumerator() |
+        Sort-Object @{ Expression = { $_.Value }; Descending = $true },
+                    @{ Expression = { [int]$_.Key }; Descending = $false })[0]
+    return [int]$mejor.Key
+}
+
+# La linea que deja una serie cerrada, alineada a la columna del archivo. Si el nombre no entra
+# antes de esa columna (o no hay columna que copiar) quedan tres espacios: el comentario se corre
+# a la derecha, pero nunca se pisa ni se recorta el nombre.
+function New-LineaTerminada([string]$nombre, [string]$hoy, [int]$columna) {
+    $prefijo = "terminada - $nombre"
+    if ($columna -gt $prefijo.Length) { $prefijo = $prefijo.PadRight($columna) }
+    else { $prefijo = $prefijo + '   ' }
+    return "$prefijo# cerrada $hoy"
+}
+
 # Se llama al terminar una corrida completa. Reescribe SOLO la linea de esa serie:
 # el resto del archivo (comentarios incluidos) queda intacto.
 function Set-SerieTerminada([string]$nombre) {
@@ -1055,21 +1089,41 @@ function Set-SerieTerminada([string]$nombre) {
 
     $hoy = (Get-Date).ToString('yyyy-MM-dd')
     $lineas = @(Get-Content -LiteralPath $estadoPath -Encoding UTF8)
+    $columna = Get-ColumnaDeComentario $lineas
     $tocada = $false
+    $cambio = $false
 
     for ($i = 0; $i -lt $lineas.Count; $i++) {
         if ($lineas[$i] -match "^(pendiente|terminada)\s+(\S+)\s+$([regex]::Escape($nombre))(\s|$)") {
-            $lineas[$i] = "terminada - $nombre   # cerrada $hoy"
+            $nueva = New-LineaTerminada $nombre $hoy $columna
+            if ($lineas[$i] -ne $nueva) { $lineas[$i] = $nueva; $cambio = $true }
             $tocada = $true
             break
         }
     }
 
     # Serie que no figuraba (carpeta nueva): se agrega al final.
-    if (-not $tocada) { $lineas += "terminada - $nombre   # cerrada $hoy" }
+    if (-not $tocada) { $lineas += New-LineaTerminada $nombre $hoy $columna; $cambio = $true }
+
+    # Si la linea ya decia exactamente esto, no se escribe nada. El caso NO es raro: la ultima
+    # sesion de la serie suele cerrarla ella misma y comitear, y este bloque corre despues. Sin
+    # este chequeo el archivo quedaba reescrito igual, y lo unico que cambiaba era el espaciado
+    # -- una diferencia sin contenido, en cada serie que cierra.
+    if (-not $cambio) {
+        Write-Host "series-estado.txt: '$nombre' ya figuraba terminada, tal cual. No lo toco." -ForegroundColor DarkGray
+        return
+    }
 
     Set-Content -LiteralPath $estadoPath -Value $lineas -Encoding UTF8
     Write-Host "series-estado.txt: '$nombre' marcada terminada." -ForegroundColor DarkGray
+
+    # Eso queda en el working tree: la marca se escribe DESPUES de la ultima sesion, o sea
+    # despues del ultimo commit de la serie, asi que no hay nada que se lo lleve puesto. El
+    # runner no commitea en el repo destino -- eso lo decide quien lo mantiene -- pero callarse
+    # deja una diferencia sin explicacion. Se imprime el comando, acotado a este unico archivo.
+    $carpeta = Split-Path -Parent $estadoPath
+    Write-Host "  Queda sin comitear a proposito. El commit lo hace quien mantiene el repo:" -ForegroundColor DarkGray
+    Write-Host ("    git -C `"{0}`" commit -m `"docs(series): cerrar {1}`" -- series-estado.txt" -f $carpeta, $nombre) -ForegroundColor DarkGray
 }
 
 # Si el archivo de estado esta mal escrito, se dice ahora y se corta. Va aca y no adentro del

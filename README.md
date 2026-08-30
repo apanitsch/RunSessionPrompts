@@ -231,6 +231,19 @@ sin que haya que acordarse de anotarla. **El script lo escribe solo**: cuando un
 bien y llegó hasta el último prompt de la serie, la marca `terminada` con la fecha. Es exclusivo del
 runner: nada más lo lee, y si lo borrás el script sigue andando (vuelve a mostrar todas, alfabético).
 
+La línea se alinea con la columna de comentario que ya usa el archivo, y **si ya decía exactamente
+eso, el archivo no se toca**: la última sesión de una serie suele cerrarla ella misma y comitear, y
+este paso del runner corre después — reescribir ahí dejaría una diferencia que es sólo espaciado.
+
+Cuando el runner **sí** cambia algo, ese cambio **queda sin comitear**: se escribe después del
+último commit de la serie, así que no hay nada que se lo lleve puesto. El runner **no commitea en el
+repo destino** — el commit lo hace quien lo mantiene —, pero imprime el comando, acotado a ese único
+archivo:
+
+```
+git -C "<carpeta de series>" commit -m "docs(series): cerrar <mi-serie>" -- series-estado.txt
+```
+
 ### Modelo y effort sugeridos por sesión
 
 Un prompt declara con qué modelo y con cuánto esfuerzo se pensó, en dos marcas del `.md`:

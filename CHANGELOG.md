@@ -14,6 +14,28 @@ el [README](README.md#versionado-y-releases).
   retomarla había que ir a buscarlo scrolleando. Los otros dos cortes de `-Unattended` —la sesión
   que pide frenar y la que no deja resultado— ya lo repetían.
 
+- **Cuando el runner sí modifica `series-estado.txt`, imprime el `git commit` de esa única
+  línea.** La marca se escribe *después* de que corrió la última sesión —o sea después del último
+  commit de la serie—, así que no hay nada que se la lleve puesta y el cambio queda en el working
+  tree. Eso no cambia —**el runner sigue sin commitear en el repo destino**, esa decisión es de
+  quien lo mantiene—, pero ahora se dice, y el comando queda listo para copiar, acotado a ese
+  archivo (nunca un `git commit -a`). Si no modificó nada, no aparece.
+
+### Corregido
+
+- **Cerrar una serie ya no deja un `series-estado.txt` modificado sólo en el espaciado.** Eran
+  dos cosas juntas. La línea se escribía con **tres espacios fijos** antes del `# cerrada
+  AAAA-MM-DD`, en vez de la columna que usa el resto del archivo; y se reescribía **aunque ya
+  dijera exactamente eso**. La combinación pegaba justo en el caso normal: la última sesión de la
+  serie la cierra ella misma, alineada, y comitea — y el runner, que corre después, volvía a
+  escribir la misma línea corriendo el comentario. Quedaba una diferencia sin contenido, en cada
+  serie que cerraba.
+
+  Ahora la columna se copia del archivo, tomando la **más frecuente** y no la mayor (un nombre de
+  serie largo empuja su propio `#` a la derecha sin ser por eso la convención); si el nombre no
+  entra antes de esa columna el comentario se corre, nunca se recorta ni se pisa el nombre; y si
+  la línea ya decía exactamente lo que se iba a escribir, **el archivo no se toca**.
+
 ## [2.0.2] — 2026-08-29
 
 ### Agregado
