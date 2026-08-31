@@ -181,6 +181,25 @@ arrancar: antes de lanzar la primera sesión ya sabés dónde va a parar.
 - **No hay techo de gasto** salvo que se lo pongas con `-MaxBudgetUsd 5`. Sin nadie mirando, una
   sesión trabada puede correr sin límite.
 
+### Si te quedás sin cuota a la mitad
+
+Una serie larga que corre de noche puede pegarle al **límite de uso de 5 horas**. Por default eso
+frena la serie como cualquier otra falla, diciendo cuál fue el límite y cuándo vence.
+
+Con `-ResumeWhen5HoursLimit` el runner **espera a que ese límite venza y reanuda esa misma sesión**
+donde quedó:
+
+```bash
+pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -Unattended -ResumeWhen5HoursLimit
+```
+
+Una sola espera por sesión: si la reanudada vuelve a chocar, la serie frena. Sólo aplica al límite
+de 5 horas — el semanal y los demás se avisan igual, pero no se destraban esperando un rato. Y sólo
+vale junto con `-Unattended`.
+
+Para vos, como autor de un prompt, no cambia nada: la sesión reanudada recibe el mismo contrato y
+tiene que devolver el mismo `{ "result", "reason" }` de siempre.
+
 ---
 
 ## `series-estado.txt` — qué muestra el menú

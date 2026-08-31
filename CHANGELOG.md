@@ -4,9 +4,41 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
-## [No publicado]
+## [2.1.0] — 2026-08-31
 
 ### Agregado
+
+- **`-ResumeWhen5HoursLimit`: cuando una sesión se corta por el límite de uso de 5 horas, el runner
+  espera a que venza y reanuda esa misma sesión.** Opt-in, y sólo válido junto con `-Unattended`:
+  fuera de ese modo hay un humano del otro lado, que es quien decide si vale la pena esperar cinco
+  horas. **Una sola espera por sesión**; si la sesión reanudada vuelve a chocar, la serie frena.
+
+  El límite de 5 horas se reconoce por el evento `rate_limit_event` del stream, exigiendo
+  `status: "rejected"` **y** `rateLimitType: "five_hour"`. No alcanza con el exit code ni con el
+  evento de cierre: ahí el `terminal_reason` dice `api_error` y el `api_error_status` dice `429`,
+  que es lo mismo que dicen el límite semanal, el de Opus y una sobrecarga del servidor — y ninguno
+  de esos se destraba esperando. Se despierta en `resetsAt` **más cinco minutos**, porque el corte
+  del lado del servidor no es exacto al segundo. Un vencimiento a más de seis horas no se espera:
+  corta diciéndolo, en vez de dejar la serie dormida hasta mañana.
+
+  La sesión reanudada recibe un prompt corto de continuación y **el mismo contrato**: sin volver a
+  pasarle el `--json-schema` y el `--append-system-prompt` no dejaría resultado estructurado, y el
+  semáforo la leería como una sesión colgada. La confirmación de `-Unattended` avisa las dos cosas
+  que esto cuesta: que la máquina se queda esperando, y que `-MaxBudgetUsd` es un techo **por
+  invocación**, así que una sesión que espera y reanuda puede gastar el doble.
+
+- **Un límite de uso que corta una sesión se dice con todas las letras, sea cual sea.** Antes una
+  sesión cortada por el límite semanal salía como un `exit 1` pelado, que manda a buscar un bug que
+  no existe. Ahora se imprime cuál fue el límite —de 5 horas, semanal, semanal de Opus, de
+  excedente— y cuándo vence. Pasa con `-ResumeWhen5HoursLimit` y sin él.
+
+- **Un arnés propio para medir el CLI real, en `tools/`.** Una API falsa de Anthropic en loopback
+  (`Start-FakeAnthropicApi.ps1`) y la medición que la maneja (`Measure-Limite5Horas.ps1`). Nada de
+  lo que `-ResumeWhen5HoursLimit` asume estaba documentado, y esperar a quedarse sin cuota no es un
+  método: el arnés reproduce el escenario completo —chocar contra el límite y reanudar— **sin gastar
+  cuota**, y devuelve error si alguna de las respuestas medidas cambia. Sirve de alarma cuando sale
+  una versión nueva del CLI. De las credenciales no anota nada: de `Authorization` guarda sólo si
+  vino y con qué esquema.
 
 - **Cuando una sesión de `-Unattended` sale con error y la serie se corta, el
   `claude --resume <id>` se repite en el mensaje del corte.** El id ya se imprimía al lanzar la
@@ -566,7 +598,7 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
-[No publicado]: https://github.com/apanitsch/RunSessionPrompts/compare/v1.7.0...HEAD
+[2.1.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.0
 [1.7.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.7.0
 [1.6.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.6.0
 [1.5.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.5.0

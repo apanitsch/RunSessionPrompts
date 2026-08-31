@@ -204,6 +204,7 @@ pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath .\mi-serie -DryRun
 | `-FullAuto` | `--dangerously-skip-permissions` en vez de `--permission-mode`. Junto con `-Auto` o `-PermissionMode` es un error, no una precedencia. |
 | `-Unattended` | La serie corre **sola**: sin Remote Control, sin `/exit`, y cada sesión dice si la serie sigue. Opt-in y se confirma a mano. Ver [`-Unattended`](#-unattended-la-serie-corre-sola). |
 | `-MaxBudgetUsd` | Techo de gasto por sesión (`--max-budget-usd`). Sólo con `-Unattended`. |
+| `-ResumeWhen5HoursLimit` | Si una sesión se corta por el límite de uso de 5 horas, espera a que venza y la reanuda. Una vez por sesión. Opt-in y sólo con `-Unattended`. Ver [`-ResumeWhen5HoursLimit`](#-resumewhen5hourslimit-cuando-le-pega-al-límite-de-uso-de-5-horas). |
 | `-Todas` | El menú incluye también las series ya terminadas. |
 | `-Worktree` | La serie corre aislada en su propio git worktree. |
 | `-BaseBranch`, `-BranchPrefix`, `-WorktreeRoot` | Detalles del worktree. |
@@ -342,6 +343,53 @@ va a parar la corrida.
   denegado, la sesión no puede hacer el trabajo, y lo reporta — que es el mismo freno de arriba.
 - **No hay techo de gasto** salvo `-MaxBudgetUsd`. Sin nadie mirando, una sesión trabada puede
   correr sin límite.
+
+#### `-ResumeWhen5HoursLimit`: cuando le pega al límite de uso de 5 horas
+
+Una serie larga que corre de noche se puede quedar sin cuota a la mitad. Sin este parámetro eso
+frena la serie como cualquier otra falla. Con él, el runner **espera a que el límite venza y reanuda
+esa misma sesión** donde quedó.
+
+**Una sola espera por sesión.** Si la sesión reanudada vuelve a pegarle al límite, la serie frena.
+La segunda vez ya no es mala suerte con el reloj: es una sesión que necesita más cuota de la que
+hay, y esperar de nuevo la deja dando vueltas toda la noche.
+
+**Cómo se da cuenta de que fue *ese* límite.** El CLI emite un evento propio en el stream —
+`rate_limit_event` — y ahí está lo único que dice qué límite fue y cuándo vence:
+
+```json
+{ "type": "rate_limit_event", "rate_limit_info": {
+    "status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1788233335 } }
+```
+
+Se exigen las dos cosas, `rejected` y `five_hour`. No alcanza con el exit code, y tampoco con el
+evento de cierre: ahí el `terminal_reason` dice `api_error` y el `api_error_status` dice `429`, que
+es lo mismo que dicen el límite semanal, el de Opus y una sobrecarga del servidor — y ninguno de
+esos se destraba esperando. Los demás límites **también se avisan** por consola, con su nombre y su
+vencimiento; lo que no hacen es disparar la espera.
+
+**Se despierta en `resetsAt` más cinco minutos.** El corte del lado del servidor no es exacto al
+segundo: despertarse justo en el vencimiento es pedirle al CLI que vuelva a chocar por unos
+segundos y gastar la única espera de esa sesión. Y la espera se mide contra el reloj absoluto en
+cada vuelta, no con un `Start-Sleep` largo, para que una máquina que suspende en el medio no se
+despierte antes de tiempo.
+
+**Un vencimiento absurdo no deja la serie dormida.** Si el evento dijera que un límite de 5 horas
+vence dentro de veinte, algo no es lo que creemos: el runner corta diciéndolo, en vez de esperar.
+
+**Qué recibe la sesión reanudada.** Un prompt corto de continuación — *"Le pegaste al límite de 5
+horas. Continuá."* — y **el mismo contrato de siempre**: el `--json-schema` y el
+`--append-system-prompt` viajan otra vez. Sin eso la sesión reanudada no dejaría resultado
+estructurado y el semáforo la leería como una sesión colgada, que es la misma pared contra la que
+se acababa de chocar.
+
+**Lo que esto cuesta, dicho antes de arrancar.** Reanudar re-manda la conversación entera, así que
+lo primero que hace la sesión reanudada es gastar parte del límite recién renovado. Y
+`-MaxBudgetUsd` es un techo **por invocación**: una sesión que espera y reanuda puede gastar hasta
+el doble de ese techo. Las dos cosas aparecen en la confirmación de `-Unattended`.
+
+Nada de esto es deducción: está [medido contra el CLI real](#el-arnés-del-límite-de-5-horas), y la
+medición se rehace sin gastar cuota.
 
 ### Aislamiento por worktree (`-Worktree`)
 
@@ -486,6 +534,10 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | sacarle el `\r?` al patrón de las marcas | el caso de los prompts en CRLF — las cuatro marcas dejan de aplicar |
 | no validar que los `.md` estén en UTF-8 | el caso del prompt guardado en ANSI |
 | no mirar los bytes NUL | el caso del prompt en UTF-16 sin BOM |
+| despertarse justo en el vencimiento, sin el margen | el caso de la espera, que mide que haya esperado el margen |
+| reanudar sin el contrato (`--json-schema` y `--append-system-prompt`) | el caso del resume, que los busca en la invocación |
+| esperar por cualquier límite y no sólo por el de 5 horas | el caso del límite semanal |
+| permitir más de una espera por sesión | el caso de la sesión que vuelve a chocar después de reanudar |
 
 Los casos de `-Unattended` corren contra el mismo doble, que además emite el stream NDJSON como lo
 emite `claude -p`. Los del `reason` con acentos usan el `.exe` nativo y arrancan el proceso hijo con
@@ -539,6 +591,50 @@ directorio de trabajo). Verifica orden, nombres de sesión, modelo por sesión, 
 intacto, `cwd`, exit codes, worktree, configuración y menús. Con `-KeepTemp` no borra los temporales.
 
 Todo cambio al runner entra con su caso.
+
+### El arnés del límite de 5 horas
+
+La suite corre contra un doble de `claude`, que es lo que la hace rápida y repetible — pero un doble
+sólo puede afirmar lo que ya sabemos. Cómo se comporta **el CLI de verdad** cuando le pega al límite
+de uso de 5 horas no está en la documentación oficial, y esperar a quedarse sin cuota para
+averiguarlo no es un método.
+
+Para eso hay un arnés propio, en `tools/`:
+
+```bash
+pwsh -File .\tools\Measure-Limite5Horas.ps1
+```
+
+Levanta una **API falsa de Anthropic** en loopback ([`tools/Start-FakeAnthropicApi.ps1`](tools/Start-FakeAnthropicApi.ps1)),
+apunta el CLI ahí con `ANTHROPIC_BASE_URL` y corre la secuencia completa: una sesión que choca contra
+el límite, y después el resume de esa misma sesión con el límite ya vencido. **No gasta cuota**:
+ninguna request sale de la máquina. Devuelve exit code distinto de cero si alguna de las respuestas
+medidas dejó de ser la que era, así que también sirve de alarma cuando sale una versión nueva del
+CLI.
+
+Lo que quedó medido contra `claude` 2.1.229:
+
+| Pregunta | Respuesta medida |
+| --- | --- |
+| ¿El evento de límite llega antes que el de cierre? | Sí, y por lejos: llega **incluso antes del `init`** |
+| ¿Se distingue el límite de 5 horas de los demás? | Sí: `rateLimitType: "five_hour"` con `status: "rejected"` |
+| ¿Dice cuándo vence? | Sí: `resetsAt`, epoch en segundos |
+| ¿Cuánto reintenta solo el CLI? | **Nada.** Un intento, corta en segundos, exit code 1 |
+| ¿Qué dice el evento de cierre? | `terminal_reason: "api_error"`, `api_error_status: 429` — no distingue qué límite fue |
+| ¿La sesión cortada deja resultado estructurado? | No |
+| ¿Se puede reanudar? | Sí, con su mismo id |
+| ¿`--json-schema` y `--append-system-prompt` siguen aplicando en el `--resume`? | Sí, si se los vuelve a pasar |
+| ¿Qué se re-manda al reanudar? | La conversación entera |
+
+El servidor sirve para más que esto: tiene escenarios de límite semanal, sobrecarga y error del
+servidor, el escenario se cambia **en caliente** reescribiendo su archivo de estado, y anota el
+cuerpo entero de cada request — que es lo que permite verificar *qué* manda el CLI en vez de
+suponerlo. No usa `System.Net.HttpListener` a propósito: sus prefijos piden una reserva de URL o
+privilegios de administrador, y eso volvería al arnés algo que no se puede correr en cualquier
+máquina.
+
+De las credenciales no anota nada: de la cabecera `Authorization` guarda sólo si vino y con qué
+esquema, nunca el valor.
 
 ### La captura del ejemplo
 

@@ -113,6 +113,23 @@ Add-Content -LiteralPath $log -Value ($registro | ConvertTo-Json -Compress -Dept
 # mismo, y lo que devuelve al final se elige con FAKE_CLAUDE_RESULT:
 #   ok (default) | stop | sin-structured | sin-result | raro
 if ($args -contains 'stream-json') {
+    # Limite de uso. El doble emite el MISMO evento que el CLI real -- medido contra claude.exe
+    # con la API falsa de tools\Start-FakeAnthropicApi.ps1 -- en las primeras N invocaciones, y
+    # despues se porta normal. La invocacion en curso se cuenta por las lineas que el propio
+    # doble ya dejo en el log, unas lineas mas arriba.
+    if ($env:FAKE_CLAUDE_LIMIT) {
+        $cuantas = if ($env:FAKE_CLAUDE_LIMIT_CALLS) { [int]$env:FAKE_CLAUDE_LIMIT_CALLS } else { 1 }
+        $invocacion = @(Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ }).Count
+        if ($invocacion -le $cuantas) {
+            $en = if ($env:FAKE_CLAUDE_LIMIT_RESET_IN) { [int]$env:FAKE_CLAUDE_LIMIT_RESET_IN } else { -600 }
+            $vence = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $en
+            Write-Output ('{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"' +
+                          $env:FAKE_CLAUDE_LIMIT + '","resetsAt":' + $vence + '}}')
+            Write-Output '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429}'
+            exit 1
+        }
+    }
+
     $motivo = if ($env:FAKE_CLAUDE_REASON) { $env:FAKE_CLAUDE_REASON } else { 'la sesion hizo lo suyo' }
     Write-Output '{"type":"system","subtype":"init","session_id":"x"}'
     Write-Output '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"mmm"}]}}'
@@ -202,13 +219,20 @@ function Invoke-EnConsolaAnsi([string]$script, [string[]]$argumentos, [string]$a
 # -- una funcion definida ahi le gana al cmdlet adentro del script --, que es como se prueba el
 # chequeo de version sin salir a la red.
 function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fakeExit, [switch]$Legacy, [string]$Prologo,
-                      [string]$fakeResult, [string]$fakeReason) {
+                      [string]$fakeResult, [string]$fakeReason,
+                      [string]$fakeLimit, [int]$fakeLimitCalls, [int]$fakeLimitResetIn) {
     $env:FAKE_CLAUDE_LOG = $fixture.Log
     if ($fakeExit) { $env:FAKE_CLAUDE_EXIT = "$fakeExit" } else { Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue }
 
     # Lo que el doble va a devolver como resultado estructurado, para los casos de -Unattended.
     if ($fakeResult) { $env:FAKE_CLAUDE_RESULT = $fakeResult } else { Remove-Item Env:\FAKE_CLAUDE_RESULT -ErrorAction SilentlyContinue }
     if ($fakeReason) { $env:FAKE_CLAUDE_REASON = $fakeReason } else { Remove-Item Env:\FAKE_CLAUDE_REASON -ErrorAction SilentlyContinue }
+
+    # El limite de uso: que tipo, en cuantas invocaciones, y cuando vence (segundos desde ahora,
+    # negativo = ya vencido, que es como se prueba el resume sin quedarse esperando).
+    if ($fakeLimit) { $env:FAKE_CLAUDE_LIMIT = $fakeLimit } else { Remove-Item Env:\FAKE_CLAUDE_LIMIT -ErrorAction SilentlyContinue }
+    if ($fakeLimitCalls) { $env:FAKE_CLAUDE_LIMIT_CALLS = "$fakeLimitCalls" } else { Remove-Item Env:\FAKE_CLAUDE_LIMIT_CALLS -ErrorAction SilentlyContinue }
+    if ($fakeLimitResetIn) { $env:FAKE_CLAUDE_LIMIT_RESET_IN = "$fakeLimitResetIn" } else { Remove-Item Env:\FAKE_CLAUDE_LIMIT_RESET_IN -ErrorAction SilentlyContinue }
 
     # Ningun caso sale a la red salvo los que prueban el chequeo de version, que pasan
     # -SkipUpdateCheck explicitamente... al reves: se lo sacan.
@@ -245,6 +269,9 @@ function Invoke-Runner($fixture, [string[]]$argumentos, [string]$stdin, [int]$fa
         Remove-Item Env:\FAKE_CLAUDE_EXIT -ErrorAction SilentlyContinue
         Remove-Item Env:\FAKE_CLAUDE_RESULT -ErrorAction SilentlyContinue
         Remove-Item Env:\FAKE_CLAUDE_REASON -ErrorAction SilentlyContinue
+        Remove-Item Env:\FAKE_CLAUDE_LIMIT -ErrorAction SilentlyContinue
+        Remove-Item Env:\FAKE_CLAUDE_LIMIT_CALLS -ErrorAction SilentlyContinue
+        Remove-Item Env:\FAKE_CLAUDE_LIMIT_RESET_IN -ErrorAction SilentlyContinue
     }
 
     return [pscustomobject]@{
@@ -2483,6 +2510,146 @@ Test-Case "-MaxBudgetUsd sin -Unattended avisa que no aplica" {
                             '-MaxBudgetUsd', '2', '-ClaudeCommand', $f.FakeClaude)
     Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
     Assert-Match 'solo aplica con -Unattended' $r.Salida "y dice por que"
+}
+
+# --- -ResumeWhen5HoursLimit: esperar el limite y reanudar --------------------
+# El comportamiento del CLI real que esto asume esta MEDIDO, no supuesto, y la medicion se
+# rehace sin gastar cuota con: pwsh -File .\tools\Measure-Limite5Horas.ps1
+#
+# Aca el doble emite el mismo evento que emite claude.exe. 'resetsAt' se pasa como un offset en
+# segundos: negativo = el limite ya vencio, que es como se prueba el resume sin que la suite se
+# quede esperando cinco horas.
+
+Test-Case "-ResumeWhen5HoursLimit sin -Unattended avisa que no aplica" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim0' @{ '01-uno.md' = 'x' }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude)
+    Assert-Equal 1 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+    Assert-Match 'solo aplica con -Unattended' $r.Salida "y dice por que"
+    Assert-Equal 0 (Get-Sesiones $f).Count "no lanza nada"
+}
+
+Test-Case "sin el flag, el limite de 5 horas frena la serie como cualquier otra falla" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim1' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n" -fakeLimit 'five_hour'
+    Assert-True ($r.ExitCode -ne 0) "la serie no termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "no reanuda nada, y la segunda sesion no se lanza"
+    Assert-Match 'limite de uso de 5 horas' $r.Salida "el motivo se dice con todas las letras"
+    Assert-Match '-ResumeWhen5HoursLimit' $r.Salida "y se dice que hay una forma de que espere"
+}
+
+Test-Case "con el flag, espera el limite y reanuda LA MISMA sesion con el mismo contrato" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim2' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeLimit 'five_hour' -fakeLimitCalls 1
+    Assert-Equal 0 $r.ExitCode "la serie termina bien. Salida:`n$($r.Salida)"
+
+    $s = Get-Sesiones $f
+    Assert-Equal 3 $s.Count "la primera choca, se reanuda, y despues corre la segunda"
+
+    $idOriginal = Get-ArgValue $s[0] '--session-id'
+    Assert-Match '^[0-9a-f-]{36}$' $idOriginal "la sesion que choco tenia su id"
+    Assert-Equal $idOriginal (Get-ArgValue $s[1] '--resume') "reanuda ESA sesion, no una nueva"
+    Assert-True (-not (Get-ArgValue $s[1] '--session-id')) "un resume no crea una sesion nueva"
+
+    # Lo que hace que la sesion reanudada pueda dejar resultado: sin estos dos, el semaforo la
+    # leeria como una sesion que se colgo.
+    Assert-Match 'structured_output|"result"' (Get-ArgValue $s[1] '--json-schema') "el esquema viaja tambien en el resume"
+    Assert-Match 'SIN SUPERVISION' (Get-ArgValue $s[1] '--append-system-prompt') "y el contrato tambien"
+    Assert-Equal 'auto' (Get-ArgValue $s[1] '--permission-mode') "el resume corre con los mismos permisos"
+
+    # El prompt de continuacion, con sus acentos: es el que se probo a mano.
+    Assert-Equal ([char]0x4C + "e pegaste al l" + [char]0xED + "mite de 5 horas. Continu" + [char]0xE1 + ".") (Get-PromptTexto $s[1]) `
+        "la sesion reanudada recibe el prompt corto de continuacion, no el original de nuevo"
+}
+
+Test-Case "la espera va hasta el vencimiento MAS el margen, no hasta el vencimiento" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim3' @{ '01-uno.md' = (Get-PromptDesatendida 'la primera') }
+
+    # El limite vence 297 segundos ANTES de ahora: con el margen de 5 minutos, el runner tiene
+    # que esperar unos 3 segundos mas. Si el margen no existiera, reanudaria al instante.
+    $reloj = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeLimit 'five_hour' -fakeLimitCalls 1 -fakeLimitResetIn -297
+    $reloj.Stop()
+
+    Assert-Equal 0 $r.ExitCode "la serie termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 2 (Get-Sesiones $f).Count "choco y se reanudo"
+    Assert-True ($reloj.Elapsed.TotalSeconds -ge 2) "tiene que haber esperado el margen (tardo $([Math]::Round($reloj.Elapsed.TotalSeconds,1))s)"
+    Assert-Match 'reanudo' $r.Salida "y decir cuando iba a reanudar"
+}
+
+Test-Case "si vuelve a pegarle al limite despues de reanudar, la serie frena" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim4' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeLimit 'five_hour' -fakeLimitCalls 9
+    Assert-True ($r.ExitCode -ne 0) "la serie no termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 2 (Get-Sesiones $f).Count "una espera por sesion: choca, reanuda, y ahi corta"
+    Assert-Match 'volvio a pegarle al limite' $r.Salida "y dice que ya habia reanudado una vez"
+}
+
+Test-Case "un limite que no es el de 5 horas no dispara ninguna espera" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim5' @{ '01-uno.md' = (Get-PromptDesatendida 'la primera') }
+
+    # El semanal llega por el mismo evento y se ve casi igual, pero no se destraba esperando un
+    # rato: confundirlos dejaria la serie dormida por algo que ninguna espera arregla.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeLimit 'seven_day' -fakeLimitCalls 1
+    Assert-True ($r.ExitCode -ne 0) "la serie no termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "no reanuda nada"
+    Assert-NotMatch 'donde quedo' $r.Salida "y no anuncia ninguna reanudacion"
+    Assert-Match 'limite de uso semanal alcanzado' $r.Salida "pero SI dice cual fue el limite: un 'exit 1' pelado manda a buscar un bug que no existe"
+}
+
+Test-Case "un vencimiento absurdamente lejos no deja la serie dormida: corta y lo dice" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim6' @{ '01-uno.md' = (Get-PromptDesatendida 'la primera') }
+
+    # Un limite de 5 horas no puede vencer dentro de 20. Si el evento lo dice, algo no es lo que
+    # creemos, y esperar 20 horas es la peor manera de enterarse.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeLimit 'five_hour' -fakeLimitCalls 1 -fakeLimitResetIn 72000
+    Assert-True ($r.ExitCode -ne 0) "la serie no termina bien. Salida:`n$($r.Salida)"
+    Assert-Equal 1 (Get-Sesiones $f).Count "no reanuda nada"
+    Assert-Match 'no espero' $r.Salida "y dice por que no espero"
+}
+
+Test-Case "-ResumeWhen5HoursLimit se anuncia antes de arrancar, no se descubre corriendo" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-lim7' @{ '01-uno.md' = (Get-PromptDesatendida 'x') }
+
+    # Sin confirmar: alcanza con ver lo que se le dijo al humano ANTES de la primera sesion.
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ResumeWhen5HoursLimit', '-MaxBudgetUsd', '3',
+                            '-ClaudeCommand', $f.FakeClaude) "`n"
+    Assert-Equal 1 $r.ExitCode "sin 'si' no arranca. Salida:`n$($r.Salida)"
+    Assert-Match 'ESPERANDO' $r.Salida "la advertencia dice que la maquina se queda esperando"
+    Assert-Match 'por invocacion' $r.Salida "y que el techo de gasto se puede duplicar"
 }
 
 Test-Case "el esquema y el contrato tambien cruzan intactos hacia un .exe nativo" {

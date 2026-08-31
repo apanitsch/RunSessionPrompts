@@ -83,6 +83,39 @@ Dos objetivos, y todo cambio se juzga contra ellos:
   - **No se usa `Start-Process`** para poder poner un timeout: sus reglas de comillas son otras y
     volvería a abrir la clase de corrupción que este repo existe para no cometer. El techo es
     `-MaxBudgetUsd`, que el CLI corta con exit code distinto de cero.
+- **`-ResumeWhen5HoursLimit` es opt-in, y sólo vale junto con `-Unattended`.** Fuera de ese modo hay
+  un humano del otro lado, que es quien decide si vale la pena esperar cinco horas. Las decisiones
+  que no se re-litigan:
+  - **El límite de 5 horas se reconoce por el `rate_limit_event` del stream, exigiendo `rejected` y
+    `five_hour` juntos.** Ni el exit code ni el evento de cierre alcanzan: ahí el `terminal_reason`
+    dice `api_error` y el `api_error_status` dice `429`, que es lo mismo que dicen el semanal, el de
+    Opus y una sobrecarga — y ninguno de esos se destraba esperando. Los demás límites **sí se
+    avisan** por consola, con su nombre y su vencimiento; lo que no hacen es disparar la espera.
+  - **Una sola espera por sesión.** La segunda vez ya no es mala suerte con el reloj: es una sesión
+    que necesita más cuota de la que hay, y esperar de nuevo la deja dando vueltas toda la noche.
+  - **Se despierta en `resetsAt` más 5 minutos**, y contra el reloj absoluto, no con un
+    `Start-Sleep` largo. El corte del servidor no es exacto al segundo, y una máquina que suspende
+    no tiene por qué despertarse antes de tiempo. Un vencimiento a más de 6 horas no se espera: se
+    corta diciéndolo.
+  - **La sesión reanudada lleva el MISMO contrato.** Sin volver a pasarle `--json-schema` y
+    `--append-system-prompt` no dejaría resultado estructurado, y el semáforo la leería como una
+    sesión colgada — la misma pared contra la que se acababa de chocar. Está medido que en un
+    `--resume` los dos flags siguen aplicando.
+  - **La rama va ANTES del semáforo, no adentro.** "Sin resultado es `stop`" no se toca: lo que se
+    agregó es una causa de corte conocida y externa, que se atiende antes de llegar a esa decisión.
+  - **`-MaxBudgetUsd` es un techo por invocación**, así que una sesión que espera y reanuda puede
+    gastar el doble. Se dice en la confirmación de `-Unattended`, junto con que la máquina se queda
+    esperando: las dos cosas se saben antes de la primera sesión, no corriendo.
+- **Nada de esto se dedujo: está medido, y la medición vive en el repo.** `tools/` levanta una API
+  falsa de Anthropic en loopback y maneja al `claude.exe` real contra ella, sin gastar cuota. Se
+  rehace con `pwsh -File .\tools\Measure-Limite5Horas.ps1`, y devuelve error si alguna respuesta
+  cambió — o sea que también es la alarma de cuando sale una versión nueva del CLI. Lo medido contra
+  la 2.1.229 está en el [README](README.md#el-arnés-del-límite-de-5-horas) y resumido en el
+  encabezado del bloque del runner. **No usa `System.Net.HttpListener`**: sus prefijos piden reserva
+  de URL o privilegios de administrador, y el arnés tiene que correr en cualquier máquina. Y **el
+  login normal se deja como está**, redirigiendo sólo `ANTHROPIC_BASE_URL`: la extracción de cuota
+  del 429 depende de que la sesión sea de suscripción, así que con una API key falsa la medición
+  podría dar un falso negativo.
 - **La consola se pone en UTF-8 en los dos ejecutables, y en los dos arriba de todo.** El runner lo
   hace siempre, no sólo en `-Unattended`: por ese mismo stdout vuelve todo lo que la sesión
   escribe. Y el instalador lo hace por su cuenta porque **no alcanza con uno solo** — medido, con
@@ -131,6 +164,8 @@ templates/                    lo que el instalador copia al destino
   session-prompts.config.json molde, no se pisa si ya existe en el destino
   prompt-instalacion-claude-md.md  el prompt de la sesion que corre la instalacion
 tests/Run-Tests.ps1           suite, sin dependencias
+tools/Start-FakeAnthropicApi.ps1  API falsa de Anthropic, para manejar al CLI real sin gastar cuota
+tools/Measure-Limite5Horas.ps1    la medicion que la usa; se rehace cuando cambia el CLI
 docs/analisis-de-versiones.md de dónde salió cada cosa, y qué se descartó
 docs/gen-ejemplo-corrida.ps1  arma la captura de consola del ejemplo del README
 docs/ejemplo-corrida.svg      esa captura, generada — no se edita a mano

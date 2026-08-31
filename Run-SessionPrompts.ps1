@@ -153,6 +153,37 @@
     la noche entera. Cuando se pasa del techo, la sesion corta con exit code distinto de cero
     y la serie frena.
 
+.PARAMETER ResumeWhen5HoursLimit
+    Cuando una sesion se corta porque le pegaste al limite de uso de 5 horas, ESPERA a que ese
+    limite venza y REANUDA esa misma sesion donde quedo. Opt-in, y solo con -Unattended: sin
+    este parametro, pegarle al limite frena la serie como cualquier otra falla.
+
+    UNA sola espera por sesion. Si la sesion reanudada vuelve a pegarle al limite, la serie
+    frena. No es una decision de comodidad: la segunda vez ya no es "mala suerte con el reloj",
+    es una sesion que necesita mas cuota de la que hay, y esperar de nuevo la puede dejar
+    dando vueltas toda la noche.
+
+    COMO SE DA CUENTA. El CLI emite un evento propio -- 'rate_limit_event' -- con el tipo de
+    limite y el momento exacto en que vence. Se exige que ese evento diga las dos cosas:
+
+        "status": "rejected", "rateLimitType": "five_hour", "resetsAt": <epoch en segundos>
+
+    Asi el limite de 5 horas queda distinguido del semanal, del de Opus y de una sobrecarga del
+    servidor, que se ven parecidos desde afuera y NO se arreglan esperando. Un exit code
+    distinto de cero no alcanza para eso, y el 'terminal_reason' tampoco: dice 'api_error', que
+    es cualquier error de API.
+
+    CUANDO SE DESPIERTA. En 'resetsAt' MAS 5 minutos. El corte del lado del servidor no es
+    exacto al segundo: despertarse justo en el vencimiento es pedirle al CLI que vuelva a
+    chocar por unos segundos y gastar la unica espera de esa sesion.
+
+    QUE LE MANDA A LA SESION REANUDADA. Un prompt corto de continuacion, no el prompt original
+    de nuevo: la sesion ya hizo la mitad del trabajo y lo tiene a la vista.
+
+    LO QUE ESTO CUESTA. Reanudar re-manda la conversacion entera, asi que lo primero que hace
+    la sesion reanudada es gastar parte del limite recien renovado. Y -MaxBudgetUsd es un techo
+    POR INVOCACION: una sesion que espera y reanuda puede gastar hasta el doble de ese techo.
+
 .PARAMETER Model
     Modelo BASE de la corrida: 'opus' (Opus 5, default) o 'sonnet' (Sonnet 5). Si no se pasa y
     tampoco esta en la configuracion, el script muestra un MENU (Enter = opus).
@@ -342,6 +373,10 @@ param(
     # Techo de gasto por sesion (--max-budget-usd). Solo con -Unattended.
     [double]$MaxBudgetUsd,
 
+    # Espera a que venza el limite de uso de 5 horas y reanuda la sesion, UNA vez por sesion.
+    # Opt-in, y solo con -Unattended. Ver la ayuda del parametro.
+    [switch]$ResumeWhen5HoursLimit,
+
     # Alias corto: 'opus' / 'sonnet' apuntan siempre al ultimo de cada familia.
     # El id completo se resuelve mas abajo para dejarlo explicito en el log.
     [ValidateSet('opus', 'sonnet')]
@@ -383,7 +418,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '2.0.2'
+$script:RunnerVersion = '2.1.0'
 
 # La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
 # esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.
@@ -807,6 +842,7 @@ $modoPasado     = $PSBoundParameters.ContainsKey('PermissionMode')
 $autoPasado     = $PSBoundParameters.ContainsKey('Auto') -and [bool]$Auto
 $fullAutoPasado = $PSBoundParameters.ContainsKey('FullAuto') -and [bool]$FullAuto
 $desatendida       = [bool]$Unattended
+$resumirPorLimite  = [bool]$ResumeWhen5HoursLimit
 
 # En -Unattended el modo de permisos NO se elige: es 'auto' y punto. Sin humano que conteste, un
 # clasificador que decide es el unico punto medio que queda -- 'acceptEdits' dejaria a la sesion
@@ -829,6 +865,13 @@ if ($PSBoundParameters.ContainsKey('MaxBudgetUsd') -and -not $desatendida) {
 }
 if ($PSBoundParameters.ContainsKey('MaxBudgetUsd') -and $MaxBudgetUsd -le 0) {
     Write-Host "-MaxBudgetUsd tiene que ser mayor que cero (llego '$MaxBudgetUsd')." -ForegroundColor Red
+    exit 1
+}
+# Fuera de -Unattended no hay nada que reanudar solo: con Remote Control y /exit hay un humano
+# del otro lado, que es quien decide si vale la pena esperar cinco horas.
+if ($resumirPorLimite -and -not $desatendida) {
+    Write-Host "-ResumeWhen5HoursLimit solo aplica con -Unattended: es la serie que corre sola la que se puede quedar esperando." -ForegroundColor Red
+    Write-Host "Agregale -Unattended, o sacale el -ResumeWhen5HoursLimit." -ForegroundColor DarkGray
     exit 1
 }
 
@@ -1418,6 +1461,87 @@ Si el prompt necesita una decision humana, no la inventes: devolve "stop" dicien
 decision hace falta. Lo mismo si te falta un permiso, una credencial o un dato que no esta.
 '@
 
+# --- Reanudar despues del limite de uso de 5 horas --------------------------
+# MEDIDO (claude 2.1.229, contra la API falsa de tools\Start-FakeAnthropicApi.ps1):
+#
+#   - cuando la cuenta le pega al limite de 5 horas, el CLI NO reintenta ni espera: corta en
+#     segundos, con exit code 1;
+#   - emite un 'rate_limit_event' ANTES del evento de cierre -- incluso antes del 'init' --, y
+#     ese evento es lo UNICO que dice QUE limite fue y CUANDO vence;
+#   - el cierre solo dice terminal_reason 'api_error' y api_error_status 429, que no distinguen
+#     el limite de 5 horas del semanal ni de una sobrecarga del servidor;
+#   - la sesion cortada asi NO deja resultado estructurado, y se puede reanudar despues con su
+#     mismo id, conservando el contrato si se le vuelven a pasar --json-schema y
+#     --append-system-prompt (que es lo que hace el bloque de mas abajo).
+#
+# La medicion se rehace, sin gastar cuota, con:
+#   pwsh -File .\tools\Measure-Limite5Horas.ps1
+$script:MargenDelLimite = [timespan]::FromMinutes(5)
+
+# Como se llama cada limite en castellano. El evento los nombra 'five_hour', 'seven_day' y
+# demas; un mensaje para un humano no dice 'seven_day'.
+$script:NombresDeLimite = @{
+    'five_hour'                  = 'de uso de 5 horas'
+    'seven_day'                  = 'de uso semanal'
+    'seven_day_opus'             = 'de uso semanal de Opus'
+    'seven_day_sonnet'           = 'de uso semanal de Sonnet'
+    'seven_day_overage_included' = 'de uso semanal (con el excedente incluido)'
+    'overage'                    = 'de excedente'
+}
+
+# Una sola espera por sesion. Ver .PARAMETER ResumeWhen5HoursLimit.
+$script:MaxEsperasPorSesion = 1
+
+# Un limite de 5 horas no puede vencer mucho mas alla de 5 horas. Si el evento dice otra cosa,
+# algo no es lo que creemos: se corta diciendolo, en vez de dejar la serie dormida hasta manana.
+$script:TechoDeEspera = [timespan]::FromHours(6)
+
+# El prompt que recibe la sesion reanudada. Corto a proposito: la sesion tiene todo el trabajo
+# anterior a la vista, y remandarle el prompt original la haria arrancar de cero sobre una
+# conversacion que ya hizo la mitad.
+#
+# Los acentos van escapados porque los .ps1 de este repo son ASCII puro. Lo que LLEGA a la
+# sesion es el texto con acentos: si se escribiera sin ellos, el prompt que corre no seria el
+# que se probo a mano.
+$script:PromptContinuar = "Le pegaste al l`u{ed}mite de 5 horas. Continu`u{e1}."
+
+# Espera a que el limite venza, mas el margen. Devuelve $true si se puede reanudar.
+#
+# No es un solo Start-Sleep largo a proposito: se compara contra el reloj absoluto en cada
+# vuelta, asi una maquina que suspende en el medio no se despierta antes de tiempo.
+function Wait-VencimientoDelLimite($info) {
+    $vence     = [DateTimeOffset]::FromUnixTimeSeconds([long]$info.resetsAt).LocalDateTime
+    $despertar = $vence.Add($script:MargenDelLimite)
+    $falta     = $despertar - (Get-Date)
+
+    if ($falta -gt $script:TechoDeEspera) {
+        Write-Host "  El evento dice que el limite vence el $($vence.ToString('yyyy-MM-dd HH:mm:ss')), a mas de $([int]$script:TechoDeEspera.TotalHours) horas de aca." -ForegroundColor Red
+        Write-Host "  Un limite de 5 horas no vence tan lejos, asi que no espero: algo no es lo que parece." -ForegroundColor Red
+        return $false
+    }
+
+    if ($falta -le [timespan]::Zero) {
+        Write-Host "  El limite ya habia vencido ($($vence.ToString('HH:mm:ss'))). Reanudo la sesion." -ForegroundColor Yellow
+        return $true
+    }
+
+    Write-Host ("  El limite vence {0}; reanudo {1}, dentro de {2:hh\:mm\:ss}." -f `
+        $vence.ToString('HH:mm:ss'), $despertar.ToString('HH:mm:ss'), $falta) -ForegroundColor Yellow
+
+    $ultimoAviso = Get-Date
+    while ((Get-Date) -lt $despertar) {
+        $resto = $despertar - (Get-Date)
+        Start-Sleep -Seconds ([Math]::Min(15, [Math]::Max(1, [int][Math]::Ceiling($resto.TotalSeconds))))
+        if (((Get-Date) - $ultimoAviso).TotalMinutes -ge 15) {
+            $ultimoAviso = Get-Date
+            Write-Host ("  Esperando: faltan {0:hh\:mm\:ss}." -f ($despertar - (Get-Date))) -ForegroundColor DarkGray
+        }
+    }
+
+    Write-Host "  El limite vencio. Reanudo la sesion." -ForegroundColor Yellow
+    return $true
+}
+
 # Un resumen de una linea de lo que la herramienta va a hacer. Lo que la TUI dibuja (cajas,
 # diffs, spinners) no viaja por el stream: viaja la conversacion, y el dibujo lo hace la TUI, que
 # en -p no existe. Asi que el formato de consola de este modo lo define el runner.
@@ -1454,6 +1578,8 @@ function Invoke-SesionDesatendida([string]$exe, [string[]]$argumentos) {
     $script:DsEstructurado = $null
     $script:DsHuboResult   = $false
     $script:DsUltimo       = ''
+    $script:DsLimite5Horas = $null
+    $script:DsLimitesAvisados = @{}
 
     & $exe @argumentos | ForEach-Object {
         $linea = "$_"
@@ -1502,6 +1628,23 @@ function Invoke-SesionDesatendida([string]$exe, [string[]]$argumentos) {
                     }
                 }
             }
+            'rate_limit_event' {
+                # El unico canal que dice QUE limite se alcanzo y CUANDO vence. TODOS los
+                # rechazos se avisan -- si no, una sesion cortada por el limite semanal saldria
+                # como un 'exit 1' pelado y mandaria a buscar un bug que no existe --, pero solo
+                # el de 5 horas se guarda para reanudar: el semanal y los de Opus o Sonnet no se
+                # destraban esperando un rato, y confundirlos dejaria la serie dormida al pedo.
+                $info = $ev.rate_limit_info
+                if ("$($info.status)" -eq 'rejected' -and $info.resetsAt) {
+                    $tipo = "$($info.rateLimitType)"
+                    if (-not $script:DsLimitesAvisados.ContainsKey($tipo)) {
+                        $script:DsLimitesAvisados[$tipo] = $true
+                        $cuando = [DateTimeOffset]::FromUnixTimeSeconds([long]$info.resetsAt).LocalDateTime
+                        Write-Host "  [$hora] limite $($script:NombresDeLimite[$tipo] ?? "de uso '$tipo'") alcanzado; vence $($cuando.ToString('HH:mm:ss'))" -ForegroundColor DarkYellow
+                    }
+                    if ($tipo -eq 'five_hour') { $script:DsLimite5Horas = $info }
+                }
+            }
             'result' {
                 $script:DsHuboResult   = $true
                 $script:DsEstructurado = $ev.structured_output
@@ -1514,6 +1657,7 @@ function Invoke-SesionDesatendida([string]$exe, [string[]]$argumentos) {
         HuboResult   = $script:DsHuboResult
         Estructurado = $script:DsEstructurado
         Ultimo       = $script:DsUltimo
+        Limite5Horas = $script:DsLimite5Horas
     }
 }
 
@@ -2049,6 +2193,9 @@ if ($desatendida) {
     if ($MaxBudgetUsd -gt 0) {
         Write-Host "Techo de gasto por sesion: USD $MaxBudgetUsd (--max-budget-usd)" -ForegroundColor DarkGray
     }
+    if ($resumirPorLimite) {
+        Write-Host "Limite de uso de 5 horas: espero a que venza (mas $([int]$script:MargenDelLimite.TotalMinutes) minutos) y reanudo la sesion, una vez por sesion." -ForegroundColor DarkGray
+    }
 }
 if ($script:ConfigPath) {
     Write-Host "Configuracion: $script:ConfigPath" -ForegroundColor DarkGray
@@ -2113,6 +2260,15 @@ if ($desatendida) {
     Write-Host "  - $cuantas sobre $workDir" -ForegroundColor Yellow
     if ($MaxBudgetUsd -le 0) {
         Write-Host "  - Sin techo de gasto: una sesion trabada puede correr sin limite. Se pone con -MaxBudgetUsd." -ForegroundColor Yellow
+    }
+    if ($resumirPorLimite) {
+        Write-Host "  - Si una sesion le pega al limite de uso de 5 horas, la maquina se queda ESPERANDO hasta" -ForegroundColor Yellow
+        Write-Host "    que venza (mas $([int]$script:MargenDelLimite.TotalMinutes) minutos) y despues reanuda esa sesion. Una sola vez por sesion." -ForegroundColor Yellow
+        if ($MaxBudgetUsd -gt 0) {
+            # El parametro dice "por sesion" y sigue siendo cierto, pero reanudar es OTRA
+            # invocacion: quien puso el techo tiene que saber que el gasto real se puede duplicar.
+            Write-Host "  - El techo de USD $MaxBudgetUsd es por invocacion: una sesion que espera y reanuda puede gastar el doble." -ForegroundColor Yellow
+        }
     }
     Write-Host ""
     $confirma = Read-Host "Escribi 'si' para arrancar (cualquier otra cosa aborta)"
@@ -2228,6 +2384,44 @@ foreach ($item in $plan) {
     if ($desatendida) {
         Write-Host "   claude --resume $sessionId   (para abrirla despues)" -ForegroundColor DarkGray
         $salida = Invoke-SesionDesatendida $ClaudeCommand $argsSesion
+
+        # --- La espera por el limite de uso de 5 horas ------------------------
+        # UNA por sesion. La sesion reanudada lleva EL MISMO contrato -- el esquema y el system
+        # prompt --: sin eso no dejaria resultado estructurado y el semaforo de abajo la leeria
+        # como una sesion colgada, que es la misma pared contra la que se acaba de chocar. Esta
+        # medido que en un --resume los dos flags siguen aplicando: tools\Measure-Limite5Horas.ps1.
+        $esperasUsadas = 0
+        $reanudo = $false
+        while ($resumirPorLimite -and $salida.ExitCode -ne 0 -and $salida.Limite5Horas -and
+               $esperasUsadas -lt $script:MaxEsperasPorSesion) {
+            $esperasUsadas++
+            if (-not (Wait-VencimientoDelLimite $salida.Limite5Horas)) { break }
+
+            $argContinuar = if ($escapar) { ConvertTo-NativeArg $script:PromptContinuar } else { $script:PromptContinuar }
+
+            # La linea de comandos no se vuelve a medir: es la de arriba con un prompt mas corto
+            # -- '--resume <guid>' ocupa lo mismo que '--session-id <guid>' --, y aquella ya paso
+            # el chequeo.
+            $argsResume = @('--model', $modeloSesion.Id, '--effort', $effortSesion) + $claudeArgs +
+                          $argsDesatendida + @('--resume', $sessionId, $argContinuar)
+
+            Write-Host "Reanudo $($p.Name) donde quedo (claude --resume $sessionId)." -ForegroundColor Yellow
+            $reanudo = $true
+            $salida = Invoke-SesionDesatendida $ClaudeCommand $argsResume
+        }
+
+        # Que la serie frene POR EL LIMITE se dice con todas las letras. Un "Fallo (exit 1)" a
+        # secas manda a buscar un bug que no existe.
+        if ($salida.ExitCode -ne 0 -and $salida.Limite5Horas) {
+            if ($reanudo) {
+                Write-Host "$($p.Name) volvio a pegarle al limite de 5 horas despues de reanudar." -ForegroundColor Red
+                Write-Host "  Es una espera por sesion: no espero de nuevo." -ForegroundColor DarkGray
+            } elseif (-not $resumirPorLimite) {
+                Write-Host "$($p.Name) se corto por el limite de uso de 5 horas." -ForegroundColor Red
+                Write-Host "  Con -ResumeWhen5HoursLimit el runner espera a que venza y la reanuda sola." -ForegroundColor DarkGray
+            }
+        }
+
         $global:LASTEXITCODE = $salida.ExitCode
     } else {
         & $ClaudeCommand @argsSesion
