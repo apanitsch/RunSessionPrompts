@@ -599,6 +599,9 @@ antes de actualizar:
 > es la que buscan `-FromRelease latest` y `-Update`.
 
 [2.1.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.0
+[2.0.2]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.2
+[2.0.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.1
+[2.0.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.0
 [1.7.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.7.0
 [1.6.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.6.0
 [1.5.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v1.5.0
