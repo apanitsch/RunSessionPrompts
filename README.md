@@ -319,6 +319,14 @@ Los dos diagnósticos se imprimen distinto a propósito: *la sesión pidió fren
 funcionando; *la sesión no dejó resultado* es una sesión que se colgó, y no se arreglan igual. El
 `reason` se imprime siempre, también cuando dice `ok`.
 
+El mismo contrato le dice a la sesión, además, que **su turno es toda la sesión**: cuando devuelve
+el resultado se cierra, y lo que haya dejado corriendo en segundo plano se muere con ella. Sin esa
+línea el modo tiene un agujero que se vio en una corrida real: la sesión mandó una suite de catorce
+minutos al fondo, programó un despertador para volver después, y cerró el turno con `ok` y un
+`reason` que decía *"en progreso, no listo para cerrar todavía"*. La serie siguió sobre un working
+tree a medias. El runner **no** puede detectarlo —el `reason` se imprime, nunca se parsea—, así que
+lo único que se puede hacer es que la sesión sepa dónde está.
+
 #### Las dos marcas del prompt
 
 | Marca | Obligatoria | Qué hace |
@@ -529,6 +537,7 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | que la ponga el runner pero no el instalador | el caso de la sesión del `CLAUDE.md` |
 | que el aviso de "viniendo de una versión vieja" salga siempre, o no salga nunca | el caso del aviso — sale sólo con la consola en ANSI, la salida redirigida y una versión previa anterior a la 2.0.1 |
 | leer la ausencia de resultado como `ok` | los dos casos de sesión que no deja resultado |
+| sacarle al contrato el párrafo del "no hay un después" | el caso que lo busca en el `--append-system-prompt` que recibe la sesión |
 | no exigir la marca `runner-requerido` | el caso de la serie que no la declara |
 | ignorar `automatico: no` | el caso de la corrida que frena antes de esa sesión |
 | sacarle el `\r?` al patrón de las marcas | el caso de los prompts en CRLF — las cuatro marcas dejan de aplicar |

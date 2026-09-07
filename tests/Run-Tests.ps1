@@ -2278,6 +2278,26 @@ Test-Case "sin -Unattended no cambia nada: ni -p, ni contrato, ni esquema" {
     Assert-Match    '--rc'                   $todos "y Remote Control sigue estando"
 }
 
+Test-Case "el contrato le dice a la sesion que su turno ES la sesion entera" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-contrato' @{ '01-uno.md' = (Get-PromptDesatendida 'la primera') }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-ClaudeCommand', $f.FakeClaude) "si`n"
+    Assert-Equal 0 $r.ExitCode "exit code. Salida:`n$($r.Salida)"
+
+    # VISTO en una corrida real: una sesion mando la suite de integracion al fondo, programo un
+    # despertador para volver en diez minutos, y cerro el turno con 'ok' y un reason que decia
+    # "en progreso, no listo para cerrar todavia". Si el contrato no se lo dice, la sesion no
+    # tiene como saberlo -- y el reason no se parsea, asi que el runner tampoco puede darse
+    # cuenta. Esto es lo unico que separa esa corrida de seguir sobre trabajo a medias.
+    $contrato = Get-ArgValue (Get-Sesiones $f)[0] '--append-system-prompt'
+    Assert-Match 'NO HAY UN DESPUES'  $contrato "que su turno es toda la sesion"
+    Assert-Match 'segundo plano'      $contrato "que lo que deje corriendo atras se muere con ella"
+    Assert-Match 'despertadores'      $contrato "que no hay quien la vuelva a llamar"
+    Assert-Match 'a medias es "stop"' $contrato "y que un turno que no alcanzo va 'stop', no 'ok'"
+}
+
 Test-Case "una sesion que devuelve 'stop' frena la serie, y el motivo se imprime" {
     $f = New-Fixture
     $serie = New-Serie $f 'serie-stop' @{

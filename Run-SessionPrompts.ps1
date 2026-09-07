@@ -129,6 +129,12 @@
     arrastraria el error a todas las que vienen. El 'reason' se imprime siempre, tambien
     cuando dice 'ok'.
 
+    Y a la sesion se le dice, ademas, que su turno ES la sesion entera: cuando devuelve el
+    resultado se cierra, y lo que haya dejado corriendo en segundo plano se muere con ella.
+    Sin eso, la sesion que manda una suite larga al fondo y se guarda el cierre para "despues"
+    devuelve 'ok' convencida de que la van a volver a llamar, y la serie sigue sobre trabajo a
+    medias -- que es justo lo que el resultado estructurado existe para evitar.
+
     QUE SERIES PUEDE CORRER. Solo las escritas sabiendo que esto existe. Cada prompt tiene que
     declararlo en su encabezado:
 
@@ -418,7 +424,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '2.1.0'
+$script:RunnerVersion = '2.1.1'
 
 # La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
 # esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.
@@ -1440,9 +1446,24 @@ $script:EsquemaResultado = '{"type":"object","properties":{"result":{"type":"str
 # SIEMPRE, en todas las sesiones, sin depender de que el agente lea un archivo ni de que el autor
 # del prompt se haya acordado. Y viaja versionado con el runner, que es lo que lo hace servir en
 # cualquier repo sin editar nada.
+#
+# El parrafo del "no hay un despues" no es relleno: VISTO en una corrida real. Una sesion mando la
+# suite de integracion al fondo, programo un despertador para volver en diez minutos, y cerro el
+# turno con 'ok' y un reason que decia "en progreso, no listo para cerrar todavia". El turno
+# terminaba ahi -- el CLI le pide el resultado y cierra, y el proceso del fondo se muere con la
+# sesion --, pero eso la sesion no lo sabia: el contrato le decia cuando va cada valor y no le
+# decia que su turno era todo lo que tenia. La serie siguio sobre un working tree a medias.
+# El diagnostico NO puede ser leer el reason: ese texto lo escribe un agente y no se parsea
+# (ver el bloque del semaforo). Lo unico que se puede hacer es que la sesion sepa donde esta.
 $script:ContratoDesatendida = @'
 Esta sesion corre SIN SUPERVISION HUMANA, como parte de una serie que un runner ejecuta de
 punta a punta. Nadie esta mirando la consola mientras trabajas y nadie puede contestarte.
+
+Y NO HAY UN DESPUES: tu turno es la sesion entera. Cuando devolves el resultado la sesion se
+cierra, y todo lo que hayas dejado corriendo en segundo plano se muere con ella. No programes
+despertadores, no te quedes esperando que te vuelvan a llamar y no te guardes trabajo para una
+segunda vuelta que no va a existir. Si algo tarda -- una suite larga, un build --, esperalo
+ADENTRO del turno; si el turno no te alcanza, eso quedo a medias, y a medias es "stop".
 
 Al terminar devolves un resultado estructurado con dos campos:
 

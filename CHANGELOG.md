@@ -4,6 +4,31 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
+## [2.1.1] — 2026-09-07
+
+### Corregido
+
+- **El contrato de `-Unattended` ahora le dice a la sesión que su turno es toda la sesión.** Faltaba,
+  y el agujero se vio en una corrida real: la sesión mandó la suite de integración al fondo, programó
+  un despertador para volver en diez minutos, y cerró el turno con `result: "ok"` y un `reason` que
+  decía *"en progreso, no listo para cerrar todavía"*. El turno terminaba ahí —el CLI le pide el
+  resultado y cierra, y el proceso de fondo se muere con la sesión—, pero eso la sesión no lo sabía:
+  el contrato le decía **cuándo** va cada valor y no le decía **dónde estaba parada**. La serie
+  siguió sobre un working tree a medias, sin commit.
+
+  El párrafo nuevo dice las cuatro cosas que hacían falta: que no hay un después, que lo que quede
+  corriendo en segundo plano se muere con la sesión, que no programe despertadores ni se guarde
+  trabajo para una segunda vuelta, y que un turno que no alcanza es `stop`.
+
+  El runner **no** puede detectar esto por su cuenta, y no lo intenta: el `reason` se imprime y
+  nunca se parsea —lo escribe un agente que estuvo leyendo el repo—, así que lo único que se puede
+  hacer es que la sesión sepa dónde está. Viaja por `--append-system-prompt`, o sea que llega solo:
+  **no hay que tocar ningún prompt** ni subir la marca `runner-requerido`.
+
+- **Las tres versiones 2.0.x vuelven a linkear a su release desde el changelog.** El bloque de
+  referencias al pie no se actualizaba desde la 1.7.0, así que los encabezados `[2.0.0]`, `[2.0.1]`
+  y `[2.0.2]` se renderizaban como texto pelado.
+
 ## [2.1.0] — 2026-08-31
 
 ### Agregado
@@ -598,6 +623,7 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
+[2.1.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.1
 [2.1.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.0
 [2.0.2]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.2
 [2.0.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.1

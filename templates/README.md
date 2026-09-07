@@ -147,6 +147,18 @@ en `ok`. Cualquier otra cosa frena —incluida la ausencia de resultado—. Es a
 de señal se leyera como "seguí", una sesión que se colgó le arrastraría el error a todas las que
 vienen.
 
+### No hay un "después": el turno es toda la sesión
+
+Cuando la sesión devuelve el resultado se cierra, y **lo que haya dejado corriendo en segundo plano
+se muere con ella**. No hay despertador que la vuelva a llamar ni segunda vuelta donde terminar lo
+que quedó. Eso el runner se lo dice a cada sesión en el mismo system prompt, así que no hay que
+escribirlo en el prompt.
+
+Lo que sí cambia es **cómo se escribe el prompt**: lo que la sesión tenga que esperar, lo espera
+adentro del turno. Si el cierre depende de una suite de catorce minutos, esos catorce minutos son
+parte de la sesión. Un prompt que no entra en un turno se parte en dos sesiones — no se deja que la
+sesión se lo arregle mandando el trabajo al fondo, porque de ahí no vuelve.
+
 ### Las dos marcas que necesitan los prompts
 
 **`runner-requerido` es obligatoria** para correr en este modo, en cada prompt:
