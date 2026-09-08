@@ -4,6 +4,45 @@ Formato [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), versionado
 [semver](https://semver.org/lang/es/). Qué cuenta como major, minor y patch para este script está en
 el [README](README.md#versionado-y-releases).
 
+## [2.1.2] — 2026-09-08
+
+### Corregido
+
+- **Todo comando que el runner imprime para copiar va entero.** Cuando una sesión pedía frenar, la
+  línea era `Para retomar ahi: -StartFrom 3` — un fragmento, justo en el corte que no viste venir,
+  que es el peor momento para acordarse de cómo se llamaba el parámetro de la ruta. Los dos cortes
+  que el runner **planea de antemano** (la sesión marcada `automatico: no`) ya imprimían el comando
+  completo; estaba al revés.
+
+  Ahora los cinco cortes imprimen la línea entera: la sesión que pide frenar, la que no deja
+  resultado, la que sale con exit code distinto de cero, y los dos de `automatico: no`.
+
+  El comando lleva **los flags de modo de esa corrida** —`-Unattended`, `-ResumeWhen5HoursLimit`,
+  `-MaxBudgetUsd`, `-Worktree` y sus opciones, `-ClaudeCommand`—. Sin ellos, la línea que se copia
+  correría distinto de la que se cortó y nadie lo diría. Lo que **no** lleva es lo que, si falta, se
+  pregunta al arrancar —modelo, effort, modo de permisos—: ahí no hay diferencia callada, hay una
+  pregunta. Y la ruta de la serie va **absoluta**: adentro del loop el directorio de trabajo es otro,
+  así que una ruta relativa se copiaba y no encontraba nada.
+
+  Dos casos particulares. El corte por `automatico: no` imprime la línea **sin** `-Unattended`: esa
+  sesión es justamente la que no puede correr sola. Y el corte por el límite de uso de 5 horas
+  **sin** `-ResumeWhen5HoursLimit` imprime la línea **con** el flag: el comando que sirve ahí no es
+  el que se acaba de cortar, es el que no se hubiera cortado.
+
+### Agregado
+
+- **La referencia del repo destino explica el tope de una llamada.** `templates/README.md` decía que
+  lo que la sesión tenga que esperar lo espera adentro del turno, pero no decía que ninguna llamada
+  puede pasar los diez minutos — y un comando que se pasa no devuelve tarde: lo matan a mitad de
+  camino. El turno no tiene ese tope y puede encadenar llamadas, así que una verificación larga sí
+  entra en la sesión; lo que no entra es en una sola llamada.
+
+  Con las dos salidas, en orden: partirla en llamadas que entren —sólo si las partes verifican lo
+  mismo que el todo, que no es el caso de una verificación cuyo resultado depende del orden o de un
+  estado compartido—, y si no, marcar la sesión `automatico: no`. Con el porqué, que es lo que
+  hacía falta para que no parezca una excusa: una sesión con alguien del otro lado no se muere
+  cuando el modelo deja de llamar herramientas, así que puede esperar un proceso largo.
+
 ## [2.1.1] — 2026-09-07
 
 ### Corregido
@@ -623,6 +662,7 @@ antes de actualizar:
 > se armaba, y no hay a que volver. El unico tag que hace falta es el de la version publicada, que
 > es la que buscan `-FromRelease latest` y `-Update`.
 
+[2.1.2]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.2
 [2.1.1]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.1
 [2.1.0]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.1.0
 [2.0.2]: https://github.com/apanitsch/RunSessionPrompts/releases/tag/v2.0.2

@@ -424,7 +424,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$script:RunnerVersion = '2.1.1'
+# Lo que se paso EXPLICITAMENTE en esta invocacion. Se guarda aca porque adentro de una funcion
+# $PSBoundParameters es el de la funcion, no el del script: sin esta copia, Get-ComandoRetomar
+# leeria el de si misma y no llevaria ningun flag.
+$script:ParametrosDados = $PSBoundParameters
+
+$script:RunnerVersion = '2.1.2'
 
 # La primera version que entiende el contrato de -Unattended. Un prompt que declara menos que
 # esto no fue escrito para correr sin supervision, aunque el runner instalado sea nuevo.
@@ -1314,6 +1319,11 @@ $prompts = @(Get-ChildItem -LiteralPath $PromptsPath -Filter *.md |
     Where-Object { $_.Name -match '^\d+' } |
     Sort-Object { Get-PromptNumber $_.Name }, Name)
 
+# Absoluto, y calculado ANTES de cambiar de directorio: los comandos que el runner imprime para
+# copiar se arman con esto. $PromptsPath puede ser relativo, y adentro del loop el cwd es otro
+# -- una linea con la ruta relativa se copiaria y no encontraria la serie.
+$script:PromptsPathAbs = if ($prompts.Count -gt 0) { $prompts[0].Directory.FullName } else { $PromptsPath }
+
 if ($prompts.Count -eq 0) {
     Write-Host "No hay prompts .md para ejecutar en $PromptsPath" -ForegroundColor Yellow
     Write-Host "Una serie son .md que empiezan con numero (01-..., 02-...): README.md y ESTADO.md no cuentan." -ForegroundColor DarkGray
@@ -2173,6 +2183,46 @@ foreach ($p in $prompts) {
     }
 }
 
+# --- El comando para retomar, entero ---------------------------------------
+# Todo comando que el runner imprime para que alguien lo copie va COMPLETO. Un fragmento como
+# '-StartFrom 3' obliga a reconstruir el resto justo cuando la corrida se corto por algo que no
+# esperabas -- que es el peor momento para acordarse de como se llamaba el parametro de la ruta.
+#
+# Llevan los flags de MODO de esta corrida. Sin ellos, la linea que se copia corre DISTINTO de
+# la que se corto y nadie lo dice, que es la clase de diferencia callada que este script existe
+# para no tener. Lo que NO llevan es lo que, si falta, se PREGUNTA al arrancar -- el modelo, el
+# effort, el modo de permisos --: ahi no hay diferencia callada, hay una pregunta.
+#
+# -AMano arma la version para un humano: sin -Unattended y sin los dos flags que solo valen
+# junto con el (avisarian "no aplica" y serian ruido en una linea que se copia tal cual).
+function Get-ComandoRetomar([int]$numero, [switch]$AMano, [switch]$ConEspera) {
+    $partes = @('pwsh', '-File', "`"$PSCommandPath`"", '-PromptsPath', "`"$script:PromptsPathAbs`"",
+                '-StartFrom', $numero)
+
+    if (-not $AMano) {
+        if ($desatendida) { $partes += '-Unattended' }
+        # -ConEspera lo agrega la corrida que se corto por el limite de 5 horas SIN el flag: el
+        # comando que sirve ahi no es el que se corrio, es el que no se hubiera cortado.
+        if ($resumirPorLimite -or $ConEspera) { $partes += '-ResumeWhen5HoursLimit' }
+        if ($MaxBudgetUsd -gt 0) {
+            # Con punto decimal siempre: en una maquina con coma, '-MaxBudgetUsd 1,5' no parsea.
+            $partes += @('-MaxBudgetUsd', $MaxBudgetUsd.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        }
+    }
+
+    # El worktree y el ejecutable no se preguntan: si esta corrida los uso y la linea copiada no
+    # los lleva, la que sigue trabaja en otro directorio o con otro claude, sin avisar.
+    if ($usaWorktree) {
+        $partes += '-Worktree'
+        if ($script:ParametrosDados.ContainsKey('WorktreeRoot'))  { $partes += @('-WorktreeRoot', "`"$WorktreeRoot`"") }
+        if ($script:ParametrosDados.ContainsKey('BranchPrefix'))  { $partes += @('-BranchPrefix', "`"$BranchPrefix`"") }
+        if ($script:ParametrosDados.ContainsKey('BaseBranch'))    { $partes += @('-BaseBranch', "`"$BaseBranch`"") }
+    }
+    if ($script:ParametrosDados.ContainsKey('ClaudeCommand')) { $partes += @('-ClaudeCommand', "`"$ClaudeCommand`"") }
+
+    return ($partes -join ' ')
+}
+
 # --- La sesion que pide humano corta la corrida automatica ----------------
 # Un prompt marcado 'automatico: no' no puede correr sin nadie. La serie corre automatica hasta
 # la anterior y FRENA ahi, limpio: quedarse esperando a que vuelvas seria justo lo que este
@@ -2187,7 +2237,12 @@ if ($desatendida) {
                 $motivo = if ($frenoHumano.MotivoHumano) { ": $($frenoHumano.MotivoHumano)" } else { "" }
                 Write-Host "$($frenoHumano.Prompt.Name) esta marcada 'automatico: no'$motivo" -ForegroundColor Red
                 Write-Host "Es la primera de la corrida, asi que en -Unattended no queda nada que correr." -ForegroundColor Red
-                Write-Host "Corre la serie sin -Unattended, o arranca despues de esa sesion con -StartFrom." -ForegroundColor DarkGray
+                Write-Host "Corre esa sesion a mano:" -ForegroundColor DarkGray
+                Write-Host "  $(Get-ComandoRetomar (Get-PromptNumber $frenoHumano.Prompt.Name) -AMano)" -ForegroundColor DarkGray
+                if ($plan.Count -gt 1) {
+                    Write-Host "O arranca la corrida automatica despues de esa sesion:" -ForegroundColor DarkGray
+                    Write-Host "  $(Get-ComandoRetomar (Get-PromptNumber $plan[1].Prompt.Name))" -ForegroundColor DarkGray
+                }
                 exit 1
             }
             $plan = @($plan[0..($i - 1)])
@@ -2242,7 +2297,7 @@ if ($frenoHumano) {
     Write-Host "La corrida automatica FRENA antes de $($frenoHumano.Prompt.Name)$motivo" -ForegroundColor Yellow
     Write-Host "Esa sesion esta marcada 'automatico: no': necesita un humano." -ForegroundColor DarkGray
     Write-Host "Cuando termine lo de arriba, seguis a mano con:" -ForegroundColor DarkGray
-    Write-Host "  pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath `"$PromptsPath`" -StartFrom $numero" -ForegroundColor DarkGray
+    Write-Host "  $(Get-ComandoRetomar $numero -AMano)" -ForegroundColor DarkGray
 }
 
 if ($DryRun) {
@@ -2439,7 +2494,7 @@ foreach ($item in $plan) {
                 Write-Host "  Es una espera por sesion: no espero de nuevo." -ForegroundColor DarkGray
             } elseif (-not $resumirPorLimite) {
                 Write-Host "$($p.Name) se corto por el limite de uso de 5 horas." -ForegroundColor Red
-                Write-Host "  Con -ResumeWhen5HoursLimit el runner espera a que venza y la reanuda sola." -ForegroundColor DarkGray
+                Write-Host "  Con -ResumeWhen5HoursLimit el runner espera a que venza y la reanuda sola; el comando de abajo ya lo lleva." -ForegroundColor DarkGray
             }
         }
 
@@ -2455,7 +2510,12 @@ foreach ($item in $plan) {
         # El id ya se imprimio al lanzar la sesion, pero en -Unattended entre ese renglon y este
         # quedo toda la salida de la sesion en el medio. Se repite para que este a mano.
         if ($desatendida) {
-            Write-Host "  claude --resume $sessionId   (para retomar)" -ForegroundColor DarkGray
+            # Si el corte fue por el limite de 5 horas y no estaba el flag, el comando que sirve
+            # es el que lo lleva: repetir el que se acaba de cortar es repetir el corte.
+            $conEspera = ($null -ne $salida.Limite5Horas) -and (-not $resumirPorLimite)
+            Write-Host "  Para retomar la serie desde esta sesion:" -ForegroundColor DarkGray
+            Write-Host "    $(Get-ComandoRetomar (Get-PromptNumber $p.Name) -ConEspera:$conEspera)" -ForegroundColor DarkGray
+            Write-Host "  Para ver que paso: claude --resume $sessionId" -ForegroundColor DarkGray
         }
         exit $LASTEXITCODE
     }
@@ -2475,6 +2535,8 @@ foreach ($item in $plan) {
                 "termino sin dejar ningun resultado"
             }
             Write-Host "$($p.Name) $quePaso. Corto la serie.$donde" -ForegroundColor Red
+            Write-Host "  Para retomar la serie desde esta sesion:" -ForegroundColor DarkGray
+            Write-Host "    $(Get-ComandoRetomar (Get-PromptNumber $p.Name))" -ForegroundColor DarkGray
             Write-Host "  Para ver que paso: claude --resume $sessionId" -ForegroundColor DarkGray
             exit 1
         }
@@ -2486,7 +2548,8 @@ foreach ($item in $plan) {
             $comoLoDijo = if ($veredicto -eq 'stop') { "pidio frenar" } else { "devolvio 'result: $veredicto', que no es un valor que este runner entienda" }
             Write-Host "$($p.Name) $comoLoDijo. Corto la serie." -ForegroundColor Red
             if ($porque) { Write-Host "  $porque" -ForegroundColor Yellow }
-            Write-Host "  Para retomar ahi: -StartFrom $(Get-PromptNumber $p.Name)" -ForegroundColor DarkGray
+            Write-Host "  Para retomar la serie desde esta sesion:" -ForegroundColor DarkGray
+            Write-Host "    $(Get-ComandoRetomar (Get-PromptNumber $p.Name))" -ForegroundColor DarkGray
             Write-Host "  Para ver que paso: claude --resume $sessionId" -ForegroundColor DarkGray
             exit 1
         }
@@ -2509,7 +2572,7 @@ if ($frenoHumano) {
     $numero = Get-PromptNumber $frenoHumano.Prompt.Name
     Write-Host ""
     Write-Host "La serie NO termino: $($frenoHumano.Prompt.Name) necesita un humano." -ForegroundColor Yellow
-    Write-Host "  pwsh -File .\Run-SessionPrompts.ps1 -PromptsPath `"$PromptsPath`" -StartFrom $numero" -ForegroundColor DarkGray
+    Write-Host "  $(Get-ComandoRetomar $numero -AMano)" -ForegroundColor DarkGray
 }
 
 if ($usaWorktree) {

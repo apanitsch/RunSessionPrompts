@@ -155,9 +155,38 @@ que quedó. Eso el runner se lo dice a cada sesión en el mismo system prompt, a
 escribirlo en el prompt.
 
 Lo que sí cambia es **cómo se escribe el prompt**: lo que la sesión tenga que esperar, lo espera
-adentro del turno. Si el cierre depende de una suite de catorce minutos, esos catorce minutos son
-parte de la sesión. Un prompt que no entra en un turno se parte en dos sesiones — no se deja que la
-sesión se lo arregle mandando el trabajo al fondo, porque de ahí no vuelve.
+adentro del turno. No se deja que se lo arregle mandando el trabajo al fondo, porque de ahí no
+vuelve.
+
+### Ninguna llamada puede pasar los 10 minutos
+
+Una llamada en primer plano tiene tope —hoy, diez minutos— y no se puede subir. Un comando que se
+pasa no devuelve tarde: **lo matan a mitad de camino**, con lo que estuviera haciendo por la mitad.
+
+El turno no tiene ese tope: puede encadenar todas las llamadas que quiera. Así que una verificación
+larga sí entra en la sesión — lo que no entra es en **una sola llamada**.
+
+Al escribir el prompt, medí cuánto tarda lo que le vas a pedir y dejá margen. Lo que entra por poco
+deja de entrar en cuanto crezca un poco aquello que ese comando recorre, y el día que se pase, la
+corrida se corta sola y a destiempo.
+
+Si no entra, en este orden:
+
+1. **Partilo en llamadas que entren** — pero sólo si las partes verifican lo mismo que el todo. Una
+   verificación cuyo resultado depende del orden o de un estado compartido **no se parte**: las
+   tandas no equivalen a la corrida completa, y el número que la sesión deje escrito estaría
+   diciendo otra cosa de la que parece.
+
+2. **Marcá la sesión `automatico: no`**, con el motivo escrito:
+
+   ```markdown
+   <!-- automatico: no | la verificación de cierre no entra en una llamada -->
+   ```
+
+   La serie corre automática hasta la sesión anterior y frena ahí, limpio, imprimiendo el comando
+   entero para seguir a mano. No es que haga falta un humano para decidir algo: es que una sesión
+   con alguien del otro lado **no se muere cuando el modelo deja de llamar herramientas**, así que
+   puede esperar un proceso largo y retomar cuando termina.
 
 ### Las dos marcas que necesitan los prompts
 

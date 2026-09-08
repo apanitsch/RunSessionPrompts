@@ -332,7 +332,7 @@ lo único que se puede hacer es que la sesión sepa dónde está.
 | Marca | Obligatoria | Qué hace |
 | --- | --- | --- |
 | `<!-- runner-requerido: 2.0 -->` | **sí**, en `-Unattended` | Dice que el prompt se escribió conociendo el contrato. Sin ella el runner no corre la serie sin supervisión. Un repo con las plantillas de una versión anterior no tiene documentado el contrato, así que sus prompts no pueden cumplirlo aunque quieran. |
-| `<!-- automatico: no \| motivo -->` | no | Esta sesión **necesita** un humano. La serie corre hasta la anterior y frena ahí, limpio, diciendo con qué `-StartFrom` seguir. |
+| `<!-- automatico: no \| motivo -->` | no | Esta sesión **necesita** un humano. La serie corre hasta la anterior y frena ahí, limpio, imprimiendo el comando entero para seguir a mano. |
 
 Las dos se validan siempre —una marca mal escrita corta, con o sin `-Unattended`— y se exigen sólo en
 este modo. El `automatico: no` se detecta **al arrancar**: antes de la primera sesión ya sabés dónde
@@ -538,6 +538,7 @@ Verificado por mutación — un test que no puede fallar no prueba nada:
 | que el aviso de "viniendo de una versión vieja" salga siempre, o no salga nunca | el caso del aviso — sale sólo con la consola en ANSI, la salida redirigida y una versión previa anterior a la 2.0.1 |
 | leer la ausencia de resultado como `ok` | los dos casos de sesión que no deja resultado |
 | sacarle al contrato el párrafo del "no hay un después" | el caso que lo busca en el `--append-system-prompt` que recibe la sesión |
+| imprimir el `-StartFrom` suelto en vez del comando entero | los tres casos que lo buscan entero: la sesión que pide frenar, la marcada `automatico: no` y el corte por el límite de 5 horas |
 | no exigir la marca `runner-requerido` | el caso de la serie que no la declara |
 | ignorar `automatico: no` | el caso de la corrida que frena antes de esa sesión |
 | sacarle el `\r?` al patrón de las marcas | el caso de los prompts en CRLF — las cuatro marcas dejan de aplicar |

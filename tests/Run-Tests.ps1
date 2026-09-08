@@ -2314,6 +2314,29 @@ Test-Case "una sesion que devuelve 'stop' frena la serie, y el motivo se imprime
     Assert-Match 'no encontre el archivo de configuracion' $r.Salida "y el motivo que dio"
 }
 
+Test-Case "el comando para retomar se imprime ENTERO, con los flags de modo de la corrida" {
+    $f = New-Fixture
+    $serie = New-Serie $f 'serie-retomar' @{
+        '01-uno.md' = (Get-PromptDesatendida 'la primera')
+        '02-dos.md' = (Get-PromptDesatendida 'la segunda')
+    }
+
+    $r = Invoke-Runner $f @('-PromptsPath', $serie, '-StartFrom', '0', '-Model', 'opus', '-Effort', 'high',
+                            '-Unattended', '-MaxBudgetUsd', '3.5', '-ClaudeCommand', $f.FakeClaude) "si`n" `
+                            -fakeResult 'stop'
+    Assert-True ($r.ExitCode -ne 0) "la serie frena. Salida:`n$($r.Salida)"
+
+    # Un fragmento como '-StartFrom 1' obliga a reconstruir el resto justo cuando la corrida se
+    # corto por algo que no esperabas. Tiene que estar TODO: el pwsh, la ruta del script, la de la
+    # serie, el numero, y los flags de modo -- sin ellos la linea copiada corre distinto y nadie
+    # lo dice.
+    Assert-Match 'pwsh -File "[^"]+Run-SessionPrompts\.ps1"' $r.Salida "va el ejecutable y el script, con ruta"
+    Assert-Match '-PromptsPath "[^"]+serie-retomar"'         $r.Salida "y la ruta de la serie, absoluta y entre comillas"
+    Assert-Match '-StartFrom 1'                              $r.Salida "y el numero de la sesion que freno"
+    Assert-Match '-Unattended'                               $r.Salida "y el modo, que si falta la linea corre distinto"
+    Assert-Match '-MaxBudgetUsd 3\.5'                        $r.Salida "y el techo de gasto, con punto decimal"
+}
+
 Test-Case "cuando la sesion sale con error, -Unattended repite el comando para retomarla" {
     $f = New-Fixture
     $serie = New-Serie $f 'serie-error' @{
@@ -2450,6 +2473,12 @@ Test-Case "una sesion marcada 'automatico: no' frena la corrida automatica antes
     Assert-Match 'FRENA antes de 03-tres.md' $r.Salida "y lo avisa ANTES de arrancar"
     Assert-Match 'hace deploy a produccion'  $r.Salida "con el motivo que dio el prompt"
     Assert-Match '-StartFrom 3'              $r.Salida "y como seguir a mano"
+
+    # Entero, y SIN -Unattended: esa sesion es justamente la que no puede correr sola, asi que
+    # una linea que se copia tal cual no puede pedir el modo que la tiene prohibida.
+    Assert-Match 'pwsh -File "[^"]+Run-SessionPrompts\.ps1"' $r.Salida "el comando va entero"
+    $linea = @($r.Salida -split '\r?\n' | Where-Object { $_ -match '-StartFrom 3' })[0]
+    Assert-NotMatch '-Unattended' $linea "y sin -Unattended, que es lo que esa sesion no puede"
 }
 
 Test-Case "si la primera sesion pide humano, -Unattended no tiene nada que correr" {
@@ -2564,6 +2593,11 @@ Test-Case "sin el flag, el limite de 5 horas frena la serie como cualquier otra 
     Assert-Equal 1 (Get-Sesiones $f).Count "no reanuda nada, y la segunda sesion no se lanza"
     Assert-Match 'limite de uso de 5 horas' $r.Salida "el motivo se dice con todas las letras"
     Assert-Match '-ResumeWhen5HoursLimit' $r.Salida "y se dice que hay una forma de que espere"
+
+    # El comando que sirve aca no es el que se acaba de cortar: es el que no se hubiera cortado.
+    # Repetir la misma linea sin el flag es repetir el corte a la vuelta de cinco horas.
+    Assert-Match 'pwsh -File "[^"]+Run-SessionPrompts\.ps1"[^\r\n]+-ResumeWhen5HoursLimit' $r.Salida `
+        "y el comando entero para retomar YA lleva el flag"
 }
 
 Test-Case "con el flag, espera el limite y reanuda LA MISMA sesion con el mismo contrato" {
